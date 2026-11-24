@@ -42,3 +42,10 @@ target/
 *.AppImage
 *.rpm
 *.zip
+
+# Generated knowledge-graph artifacts (graphify)
+graphify-out/
+
+# Server runtime state
+server/state.json
+server/server.toml

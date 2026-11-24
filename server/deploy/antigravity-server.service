@@ -1,0 +1,45 @@
+# Antigravity Gateway Server - systemd unit.
+#
+# Install:
+#   useradd --system --home /opt/antigravity-server --shell /usr/sbin/nologin antigravity
+#   install -d -o antigravity -g antigravity /opt/antigravity-server
+#   install -o antigravity -g antigravity target/release/antigravity-server /opt/antigravity-server/
+#   install -o antigravity -g antigravity server.toml /opt/antigravity-server/
+#   # put secrets in /etc/antigravity-server.env (chmod 600), see below
+#   cp deploy/antigravity-server.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now antigravity-server
+#
+# Secrets are NOT stored in this unit or in server.toml. Create
+# /etc/antigravity-server.env (owner root:root or antigravity, mode 0600)
+# with:
+#   AG_CLIENT_KEY=<long random gateway token the client uses as its Bearer>
+#   AG_GOOGLE_CLIENT_ID=<Google OAuth client id>
+#   AG_GOOGLE_CLIENT_SECRET=<Google OAuth client secret>
+#   AG_GOOGLE_REFRESH_TOKEN=<real Google refresh_token extracted from the keyring; see README>
+# and uncomment the EnvironmentFile line below.
+
+[Unit]
+Description=Antigravity Gateway Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=antigravity
+WorkingDirectory=/opt/antigravity-server
+ExecStart=/opt/antigravity-server/antigravity-server
+Environment=AG_CONFIG=/opt/antigravity-server/server.toml
+Environment=RUST_LOG=info
+# Uncomment to load AG_CLIENT_KEY / AG_GOOGLE_CLIENT_ID /
+# AG_GOOGLE_CLIENT_SECRET / AG_GOOGLE_REFRESH_TOKEN from a root-owned 0600 file:
+#EnvironmentFile=/etc/antigravity-server.env
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/antigravity-server
+
+[Install]
+WantedBy=multi-user.target

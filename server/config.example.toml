@@ -1,0 +1,80 @@
+# antigravity-server configuration example.
+# Copy to server.toml and adjust. Environment variables override file values.
+# Config file path: env AG_CONFIG (default ./server.toml).
+
+[server]
+# Listen address (env AG_LISTEN_ADDR).
+listen_addr = "0.0.0.0:8045"
+# Public base URL advertised in links/updates (env AG_PUBLIC_URL). Empty = auto.
+public_url = ""
+# Max request body size in bytes (default 64 MiB).
+max_body_bytes = 67108864
+# Path to the persisted state file.
+state_file = "./state.json"
+
+[auth]
+# Client API keys. Env AG_CLIENT_KEY pushes/replaces the key with account_id "main".
+[[auth.keys]]
+key = "IMPULS-change-me"
+account_id = "main"        # default "main"
+tier = 3                   # default 3
+expires_at = 0             # unix seconds; 0 = never expires
+total_credits = 9999       # default 9999
+allow_tunnel_egress = true # default true
+
+[google]
+# OAuth token endpoint.
+token_url = "https://oauth2.googleapis.com/token"
+# Google OAuth client credentials (env AG_GOOGLE_CLIENT_ID / AG_GOOGLE_CLIENT_SECRET).
+# Leave empty and fill in from your Google Cloud project.
+client_id = ""
+client_secret = ""
+# Refresh access tokens this many seconds before expiry.
+refresh_skew_secs = 120
+# Google accounts providing refresh tokens.
+# Env AG_GOOGLE_REFRESH_TOKEN applies to the account with id "main".
+[[google.accounts]]
+id = "main"
+refresh_token = ""
+project_id = ""
+
+[upstream]
+# Upstream API base (env AG_UPSTREAM_BASE_URL).
+base_url = "https://daily-cloudcode-pa.googleapis.com"
+# Rewrite /v1internal/<x>:<method> colon-form paths when normalizing.
+normalize_v1internal_colon = true
+# Pass unknown /v1/* paths through to upstream unchanged.
+passthrough_unknown_v1 = true
+connect_timeout_secs = 15
+stream_idle_timeout_secs = 300
+# Custom User-Agent for upstream requests. Empty = reqwest default.
+user_agent = ""
+# Extra headers attached to every upstream request.
+# [upstream.extra_headers]
+# X-Example = "value"
+
+[tunnel]
+# Enable client tunnel support (env AG_TUNNEL_ENABLED).
+enabled = true
+# Routing mode: direct | allowlist | prefer_tunnel | always
+routing_mode = "direct"
+# Hosts routed through the tunnel in allowlist/prefer_tunnel modes.
+route_hosts = []
+handshake_timeout_ms = 10000
+acquire_timeout_ms = 3000
+idle_ping_secs = 25
+max_workers_per_key = 32
+
+[models]
+# Model ids to advertise. Empty = built-in default list.
+advertise = []
+
+[updates]
+# Update manifest (all optional; empty version disables update ads).
+version = ""
+name = ""
+body = ""
+# Named assets: [updates.assets.<name>] with id and path.
+# [updates.assets.app]
+# id = "app"
+# path = "./dist/app.zip"
