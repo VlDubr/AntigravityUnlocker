@@ -16,7 +16,7 @@
 #   AG_GOOGLE_CLIENT_ID=<Google OAuth client id>
 #   AG_GOOGLE_CLIENT_SECRET=<Google OAuth client secret>
 #   AG_GOOGLE_REFRESH_TOKEN=<real Google refresh_token extracted from the keyring; see README>
-# and uncomment the EnvironmentFile line below.
+# The EnvironmentFile line below is enabled by default (optional "-" prefix).
 
 [Unit]
 Description=Antigravity Gateway Server
@@ -30,9 +30,10 @@ WorkingDirectory=/opt/antigravity-server
 ExecStart=/opt/antigravity-server/antigravity-server
 Environment=AG_CONFIG=/opt/antigravity-server/server.toml
 Environment=RUST_LOG=info
-# Uncomment to load AG_CLIENT_KEY / AG_GOOGLE_CLIENT_ID /
-# AG_GOOGLE_CLIENT_SECRET / AG_GOOGLE_REFRESH_TOKEN from a root-owned 0600 file:
-#EnvironmentFile=/etc/antigravity-server.env
+# Load AG_CLIENT_KEY / AG_GOOGLE_CLIENT_ID / AG_GOOGLE_CLIENT_SECRET /
+# AG_GOOGLE_REFRESH_TOKEN from a root-owned 0600 file. The "-" prefix makes
+# the file optional (service still starts without it, using server.toml).
+EnvironmentFile=-/etc/antigravity-server.env
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
