@@ -71,6 +71,18 @@ async fn upstream(State(mock): State<Arc<Mock>>, req: Request) -> Response {
         return Json(json!({ "cloudaicompanionProject": { "id": project } })).into_response();
     }
 
+    if path == "/v1internal:fetchAvailableModels" {
+        return Json(json!({
+            "models": {
+                "claude-opus-5-5-low": { "displayName": "Claude Opus 5.5 (Low)" },
+                "claude-opus-5-5-medium": { "displayName": "Claude Opus 5.5 (Medium)" },
+                "claude-opus-5-5-high": { "displayName": "Claude Opus 5.5 (High)" },
+                "gemini-3-flash": { "displayName": "Gemini 3 Flash" }
+            }
+        }))
+        .into_response();
+    }
+
     mock.requests
         .lock()
         .unwrap()
@@ -467,4 +479,30 @@ async fn rejects_unsupported_input_and_never_completes_truncated_streams() {
     .unwrap();
     assert!(truncated.contains("\"error\""));
     assert!(!truncated.contains("[DONE]"));
+}
+
+#[tokio::test]
+async fn routes_reasoning_effort_to_matching_variant_model() {
+    let (gateway, mock) = setup(true, "configured-project").await;
+    let client = reqwest::Client::new();
+
+    for (effort, expected_upstream) in [
+        (Some("high"), "claude-opus-5-5-high"),
+        (Some("low"), "claude-opus-5-5-low"),
+        (None, "claude-opus-5-5-medium"),
+    ] {
+        let mut body = json!({
+            "model": "claude-opus-5-5",
+            "messages": [{ "role": "user", "content": "Hello" }]
+        });
+        if let Some(effort) = effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        let response = request(&client, &gateway, body).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: Value = response.json().await.unwrap();
+        assert_eq!(parsed["model"], "claude-opus-5-5");
+        let captured = mock.requests.lock().unwrap();
+        assert_eq!(captured.last().unwrap().2["model"], expected_upstream);
+    }
 }

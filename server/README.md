@@ -393,9 +393,9 @@ client IP mainly changes what IP fingerprint the upstream observes.
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/health` | none | liveness probe; `{"status":"ok"}` |
-| GET | `/v1/models` | Bearer key | OpenAI-style model list (`object:"list"`, `data[]`) fetched from upstream `fetchAvailableModels` (60s per-account cache) unless `[models] advertise` is set |
-| POST | `/v1/chat/completions` | Bearer key | OpenAI-style text chat and tool calls when `[openai] enabled = true`; otherwise passthrough |
-| GET | `/v1/quota` | Bearer key | quota snapshot: `tier`, `total_credits`, `expires_at` (null or unix **seconds**), `enable_credit_overages`, `models:{}`, `resets:{}` populated from `fetchAvailableModels` |
+| GET | `/v1/models` | Bearer key | OpenAI-style model list (`object:"list"`, `data[]`) fetched from `fetchAvailableModels` (15s cache, `?refresh=1`) with reasoning-effort variants consolidated |
+| POST | `/v1/chat/completions` | Bearer key | OpenAI-style text chat, tool calls, and `reasoning_effort` variant routing when `[openai] enabled = true`; otherwise passthrough |
+| GET | `/v1/quota` | Bearer key | quota snapshot: `plan_name`/`tier_id` from `loadCodeAssist`, `models`/`resets` and `quota_groups` (5h + weekly) from `retrieveUserQuotaSummary` (`?refresh=1`) |
 | POST | `/v1/quota/config` | Bearer key | body `{"enable_credit_overages": bool}`; flips the flag (persisted to `state_file`) |
 | GET | `/v1/client-update?platform=...` | none | update manifest; empty `version` when unconfigured; `platform=macos` normalizes to `mac-arm` |
 | GET | `/v1/client-update/download/{asset_id}` | none | streamed update asset; unknown id → 404 |

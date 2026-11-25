@@ -35,7 +35,10 @@ pub async fn completions(
         .map_err(|e| AppError::BadRequest(format!("failed to read request body: {e}")))?;
     let input: Value = serde_json::from_slice(&body)
         .map_err(|e| AppError::BadRequest(format!("invalid JSON request: {e}")))?;
-    let converted = convert_request(&input)?;
+    let converted = convert_request(&input).map_err(|err| {
+        tracing::warn!(error = %err, "OpenAI /v1/chat/completions request rejected");
+        err
+    })?;
 
     // Resolve a wildcard key once so project discovery and generation use the same account.
     let (_, _, account_id) = state
@@ -46,6 +49,21 @@ pub async fn completions(
     resolved_key.account_id = account_id;
     let auth = AuthenticatedKey(resolved_key);
     let project = project_id(&state, &auth).await?;
+    let raw_models = crate::handlers::models::fetch_raw_upstream_models(&state, &auth, false)
+        .await
+        .unwrap_or_default();
+    let upstream_model = crate::handlers::models::resolve_upstream_model(
+        &converted.model,
+        converted.reasoning_effort.as_deref(),
+        &raw_models,
+    );
+    tracing::info!(
+        requested_model = %converted.model,
+        %upstream_model,
+        reasoning_effort = ?converted.reasoning_effort,
+        stream = converted.stream,
+        "routing /v1/chat/completions"
+    );
 
     let id = random_id();
     let created = SystemTime::now()
@@ -64,7 +82,7 @@ pub async fn completions(
     request_object.insert("sessionId".to_string(), json!(format!("session-{id}")));
     let payload = json!({
         "project": project,
-        "model": converted.model,
+        "model": upstream_model,
         "userAgent": "antigravity",
         "requestId": format!("agent-{id}"),
         "requestType": "agent",
@@ -87,7 +105,7 @@ pub async fn completions(
     if !upstream.status().is_success() {
         return Ok(upstream_error(
             upstream,
-            converted.model.as_str(),
+            upstream_model.as_str(),
             payload.to_string().len(),
             converted.stream,
             &payload["request"],

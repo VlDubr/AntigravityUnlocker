@@ -90,6 +90,8 @@ const KNOWN_KEYS: &[&str] = &[
     "prediction",
     "prompt_cache_key",
     "prompt_cache_retention",
+    "reasoning",
+    "reasoning_effort",
     "response_format",
     "service_tier",
     "stop",
@@ -111,6 +113,10 @@ const KNOWN_KEYS: &[&str] = &[
 pub(crate) struct ConvertedChat {
     /// Model name as requested by the client (passed through unchanged).
     pub model: String,
+    /// Optional reasoning effort requested by the client (`minimal`, `low`,
+    /// `medium`, `high`, `xhigh`, `max`, `none`) used by the gateway to route
+    /// consolidated models to the matching upstream variant.
+    pub reasoning_effort: Option<String>,
     /// Whether the client asked for a streamed response.
     pub stream: bool,
     /// `stream_options.include_usage`: emit a trailing usage-only chunk.
@@ -245,6 +251,8 @@ pub(crate) fn convert_request(input: &Value) -> Result<ConvertedChat, AppError> 
             "`parallel_tool_calls` is not supported (only null, absent or true are accepted)",
         );
     }
+
+    let reasoning_effort = parse_reasoning_effort(body)?;
 
     let generation_config = generation_config(body)?;
     let tools = tool_declarations(significant(body.get("tools")))?;
@@ -386,10 +394,47 @@ pub(crate) fn convert_request(input: &Value) -> Result<ConvertedChat, AppError> 
 
     Ok(ConvertedChat {
         model,
+        reasoning_effort,
         stream,
         include_usage,
         request: Value::Object(request),
     })
+}
+
+fn normalize_effort_value(raw: &str, field: &str) -> Result<Option<String>, AppError> {
+    let lower = raw.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "default" | "" => Ok(None),
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => Ok(Some(lower)),
+        _ => bad(format!(
+            "`{field}` value `{raw}` is not supported (expected none, minimal, low, medium, high, xhigh or max)"
+        )),
+    }
+}
+
+fn parse_reasoning_effort(body: &Map<String, Value>) -> Result<Option<String>, AppError> {
+    if let Some(value) = significant(body.get("reasoning_effort")) {
+        let s = value.as_str().ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "`reasoning_effort` must be a string, got {}",
+                type_name(value)
+            ))
+        })?;
+        return normalize_effort_value(s, "reasoning_effort");
+    }
+    if let Some(value) = significant(body.get("reasoning")) {
+        let obj = require_object(value, "reasoning")?;
+        if let Some(effort) = significant(obj.get("effort")) {
+            let s = effort.as_str().ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "`reasoning.effort` must be a string, got {}",
+                    type_name(effort)
+                ))
+            })?;
+            return normalize_effort_value(s, "reasoning.effort");
+        }
+    }
+    Ok(None)
 }
 /// Pack a native tool-call id and an optional Google `thoughtSignature` into
 /// the id exposed to OpenAI clients. Deterministic: identical inputs produce

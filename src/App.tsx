@@ -65,6 +65,23 @@ interface ModelInfo {
   max_output_tokens?: number;
   supports_images?: boolean;
   supports_tools?: boolean;
+  thinking?: boolean;
+  supports_reasoning_effort?: string[];
+  reasoning_variants?: Record<string, string>;
+  quota_remaining_fraction?: number;
+  quota_reset_time?: string;
+}
+
+interface QuotaBucket {
+  bucket_id: string;
+  window: string;
+  percent: number;
+  reset_time?: string | null;
+}
+
+interface QuotaGroup {
+  display_name: string;
+  buckets: QuotaBucket[];
 }
 
 interface ModelsResponse {
@@ -145,7 +162,7 @@ const dict = {
     apiPrereqTitle: "Server prerequisite",
     apiPrereqText: "Upgrade the gateway and set AG_OPENAI_ENABLED=true on the server. Without the adapter, Chat Completions requests are not translated.",
     apiNoteTitle: "Note",
-    apiNoteText: "The adapter supports text, streaming responses and function tools. Compatibility with a real upstream account and model has not yet been verified.",
+    apiNoteText: "The adapter supports text, streaming responses, function tools, and reasoning_effort routing for consolidated models.",
     apiSecurityTitle: "Security",
     apiSecurityText: "Sending requests over remote HTTP exposes your API key and data to interception. Use HTTPS for remote connections.",
     apiCopilotTitle: "VS Code Copilot (BYOK)",
@@ -174,6 +191,12 @@ const dict = {
     mdMaxOutput: "Max output tokens",
     mdImageInput: "Image input",
     mdToolSupport: "Tool calling",
+    mdReasoningEffort: "Reasoning modes",
+    mdVariants: "Upstream variants",
+    mdQuotaRemaining: "Remaining quota",
+    mdCopyCopilot: "Copy Copilot JSON",
+    quota5h: "5h limit",
+    quotaWeekly: "Weekly limit",
     mdUnknown: "Unknown",
     mdNotProvided: "Not provided by server",
     mdYes: "Supported",
@@ -246,7 +269,7 @@ const dict = {
     apiPrereqTitle: "Требование к серверу",
     apiPrereqText: "Обновите шлюз и установите на сервере AG_OPENAI_ENABLED=true. Без адаптера запросы Chat Completions не преобразуются.",
     apiNoteTitle: "Примечание",
-    apiNoteText: "Адаптер поддерживает текст, потоковые ответы и вызовы функций. Совместимость с реальным аккаунтом и моделью ещё не проверена.",
+    apiNoteText: "Адаптер поддерживает текст, потоковые ответы, вызовы функций и маршрутизацию reasoning_effort для объединённых моделей.",
     apiSecurityTitle: "Безопасность",
     apiSecurityText: "Запросы по удалённому HTTP раскрывают API-ключ и данные. Для удалённого подключения используйте HTTPS.",
     apiCopilotTitle: "VS Code Copilot (BYOK)",
@@ -275,6 +298,12 @@ const dict = {
     mdMaxOutput: "Максимум токенов вывода",
     mdImageInput: "Входные изображения",
     mdToolSupport: "Вызов инструментов",
+    mdReasoningEffort: "Режимы рассуждения",
+    mdVariants: "Варианты модели",
+    mdQuotaRemaining: "Остаток лимита",
+    mdCopyCopilot: "Скопировать JSON для Copilot",
+    quota5h: "Лимит 5ч",
+    quotaWeekly: "Недельный лимит",
     mdUnknown: "Неизвестно",
     mdNotProvided: "Не предоставлено сервером",
     mdYes: "Поддерживается",
@@ -365,6 +394,156 @@ function formatModelName(id: string): string {
     .replace(/\b\w/g, c => c.toUpperCase());
 }
 
+const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+const EFFORT_SUFFIXES: ReadonlyArray<readonly [string, string]> = [
+  ['-minimal', 'minimal'],
+  ['-xhigh', 'xhigh'],
+  ['-medium', 'medium'],
+  ['-high', 'high'],
+  ['-low', 'low'],
+  ['-max', 'max'],
+];
+
+function splitEffortSuffix(id: string): [string, string] | null {
+  for (const [suffix, effort] of EFFORT_SUFFIXES) {
+    if (id.endsWith(suffix) && id.length > suffix.length) {
+      return [id.slice(0, -suffix.length), effort];
+    }
+  }
+  return null;
+}
+
+function stripEffortFromDisplayName(name: string): string {
+  const trimmed = name.trim();
+  const tags = [
+    '(XHigh)', '(Minimal)', '(Medium)', '(High)', '(Low)', '(Max)',
+    'XHigh', 'Minimal', 'Medium', 'High', 'Low', 'Max',
+  ];
+  const lower = trimmed.toLowerCase();
+  for (const tag of tags) {
+    if (lower.length > tag.length && lower.endsWith(tag.toLowerCase())) {
+      const prefix = trimmed.slice(0, trimmed.length - tag.length).trimEnd();
+      if (prefix.length > 0) return prefix;
+    }
+  }
+  return trimmed;
+}
+
+function fractionToPercent(fraction: number): number {
+  if (fraction <= 0) return 0;
+  if (fraction >= 1) return 100;
+  return Math.min(99, Math.max(1, Math.round(fraction * 100)));
+}
+
+function consolidateClientModels(list: ModelInfo[]): ModelInfo[] {
+  const groups = new Map<string, Array<{ effort: string | null; model: ModelInfo }>>();
+  for (const model of list) {
+    if (model.supports_reasoning_effort && model.supports_reasoning_effort.length > 0) {
+      groups.set(model.id, [{ effort: null, model }]);
+      continue;
+    }
+    const split = splitEffortSuffix(model.id);
+    const key = split ? split[0] : model.id;
+    const effort = split ? split[1] : null;
+    const arr = groups.get(key) || [];
+    arr.push({ effort, model });
+    groups.set(key, arr);
+  }
+
+  const out: ModelInfo[] = [];
+  for (const [baseId, items] of groups.entries()) {
+    const hasEffort = items.some(i => i.effort !== null);
+    if (items.length < 2 || !hasEffort) {
+      for (const item of items) out.push(item.model);
+      continue;
+    }
+
+    const variantMap: Record<string, string> = {};
+    for (const item of items) {
+      if (item.effort) variantMap[item.effort] = item.model.id;
+    }
+    const efforts = EFFORT_ORDER.filter(e => Boolean(variantMap[e]));
+    const firstWithName = items.find(i => i.model.display_name)?.model.display_name;
+    let displayName = firstWithName ? stripEffortFromDisplayName(firstWithName) : formatModelName(baseId);
+    if (baseId.endsWith('-tiered') && !displayName.toLowerCase().includes('tiered')) {
+      displayName = `${displayName} (Tiered)`;
+    }
+
+    const contexts = items.map(i => i.model.context_window).filter((n): n is number => typeof n === 'number' && n > 0);
+    const outputs = items.map(i => i.model.max_output_tokens).filter((n): n is number => typeof n === 'number' && n > 0);
+    const imgFlags = items.map(i => i.model.supports_images).filter((b): b is boolean => typeof b === 'boolean');
+    const toolFlags = items.map(i => i.model.supports_tools).filter((b): b is boolean => typeof b === 'boolean');
+
+    let minFraction: number | undefined;
+    let minReset: string | undefined;
+    for (const { model } of items) {
+      if (typeof model.quota_remaining_fraction === 'number') {
+        if (minFraction === undefined || model.quota_remaining_fraction < minFraction) {
+          minFraction = model.quota_remaining_fraction;
+          minReset = model.quota_reset_time || minReset;
+        }
+      } else if (!minReset && model.quota_reset_time) {
+        minReset = model.quota_reset_time;
+      }
+    }
+
+    const orderedVariants: Record<string, string> = {};
+    for (const e of efforts) orderedVariants[e] = variantMap[e];
+
+    out.push({
+      id: baseId,
+      object: 'model',
+      owned_by: items[0].model.owned_by || 'antigravity',
+      display_name: displayName,
+      context_window: contexts.length > 0 ? Math.max(...contexts) : undefined,
+      max_output_tokens: outputs.length > 0 ? Math.max(...outputs) : undefined,
+      supports_images: imgFlags.length > 0 ? imgFlags.some(Boolean) : undefined,
+      supports_tools: toolFlags.length > 0 ? toolFlags.some(Boolean) : undefined,
+      thinking: true,
+      supports_reasoning_effort: [...efforts],
+      reasoning_variants: orderedVariants,
+      quota_remaining_fraction: minFraction,
+      quota_reset_time: minReset,
+    });
+  }
+
+  out.sort((a, b) => a.id.localeCompare(b.id));
+  return out;
+}
+
+function getModelQuota(
+  model: ModelInfo,
+  modelPercentages: Record<string, number>,
+  modelResets: Record<string, string>,
+): { pct?: number; resetTime?: string } {
+  if (modelPercentages[model.id] !== undefined) {
+    return { pct: modelPercentages[model.id], resetTime: modelResets[model.id] };
+  }
+  if (model.reasoning_variants) {
+    let minPct: number | undefined;
+    let resetTime: string | undefined;
+    for (const vid of Object.values(model.reasoning_variants)) {
+      const p = modelPercentages[vid];
+      if (p !== undefined && (minPct === undefined || p < minPct)) {
+        minPct = p;
+        resetTime = modelResets[vid] || resetTime;
+      } else if (!resetTime && modelResets[vid]) {
+        resetTime = modelResets[vid];
+      }
+    }
+    if (minPct !== undefined) {
+      return { pct: minPct, resetTime };
+    }
+  }
+  if (typeof model.quota_remaining_fraction === 'number') {
+    return {
+      pct: fractionToPercent(model.quota_remaining_fraction),
+      resetTime: model.quota_reset_time,
+    };
+  }
+  return { resetTime: modelResets[model.id] || model.quota_reset_time };
+}
+
 // Renders optional server-advertised token counts. Never derived from the model ID.
 function formatTokenCount(value: unknown, t: { mdUnknown: string; mdNotProvided: string }) {
   if (value === undefined || value === null) {
@@ -400,9 +579,15 @@ function CountdownTimer({ resetTime }: { resetTime: string }) {
         return;
       }
 
-      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
       const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
       const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+      if (days > 0) {
+        setTimeLeft(`${days}d ${hours}h`);
+        return;
+      }
 
       const parts = [];
       if (hours > 0) parts.push(`${hours}h`);
@@ -462,6 +647,7 @@ export default function App() {
   const [apiCopyError, setApiCopyError] = useState(false);
   const apiDialogRef = useRef<HTMLDivElement>(null);
   const [detailsModel, setDetailsModel] = useState<ModelInfo | null>(null);
+  const [detailsCopied, setDetailsCopied] = useState(false);
   const detailsDialogRef = useRef<HTMLDivElement>(null);
   const [ideType, setIdeType] = useState('Antigravity IDE');
   const [customExePathIde, setCustomExePathIde] = useState('');
@@ -474,6 +660,7 @@ export default function App() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelPercentages, setModelPercentages] = useState<Record<string, number>>({});
   const [modelResets, setModelResets] = useState<Record<string, string>>({});
+  const [quotaGroups, setQuotaGroups] = useState<QuotaGroup[]>([]);
   const [_totalCredits, setTotalCredits] = useState<number | null>(null);
   const [creditOverages, setCreditOverages] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -558,6 +745,7 @@ export default function App() {
   const [proxyRunning, setProxyRunning] = useState(false);
   const [stoppingProxy, setStoppingProxy] = useState(false);
   const [tier, setTier] = useState<number | null>(null);
+  const [planName, setPlanName] = useState<string | null>(null);
 
   // ─── Load saved state ────────────────────────────────────────────
 
@@ -634,15 +822,16 @@ export default function App() {
 
   // ─── Token Validation via /v1/models ─────────────────────────────
 
-  const validateToken = useCallback(async (tokenToUse: string, url?: string) => {
+  const validateToken = useCallback(async (tokenToUse: string, url?: string, forceRefresh = false) => {
     const serverBase = url || serverUrl;
     if (!tokenToUse) return;
     
     setLoading(true);
     setError('');
+    const refreshSuffix = forceRefresh ? '?refresh=1' : '';
     
     try {
-      const res = await rustFetch(`${serverBase}/v1/models`, {
+      const res = await rustFetch(`${serverBase}/v1/models${refreshSuffix}`, {
         headers: {
           'Authorization': `Bearer ${tokenToUse}`,
         },
@@ -651,7 +840,7 @@ export default function App() {
       if (res.ok) {
         const data: ModelsResponse = await res.json();
         const serverModels = data.data || [];
-        const modelList: ModelInfo[] =
+        const rawList: ModelInfo[] =
           serverModels.length > 0
             ? serverModels
             : IDE_ALLOWED_MODELS.filter(isAllowedModel).map(id => ({
@@ -659,11 +848,11 @@ export default function App() {
                 object: 'model',
                 owned_by: 'antigravity',
               }));
+        const modelList = consolidateClientModels(rawList);
         setModels(modelList);
         
-        let quotaSuccess = false;
         try {
-          const qRes = await rustFetch(`${serverBase}/v1/quota`, {
+          const qRes = await rustFetch(`${serverBase}/v1/quota${refreshSuffix}`, {
             headers: { 'Authorization': `Bearer ${tokenToUse}` },
           });
           if (qRes.ok) {
@@ -671,36 +860,14 @@ export default function App() {
             setTotalCredits(qData.total_credits);
             setExpiresAt(qData.expires_at || null);
             setCreditOverages(qData.enable_credit_overages);
-            let fModels = qData.models || {};
-            let fResets = qData.resets || {};
-            if (Object.keys(fModels).length === 0) {
-                modelList.forEach(m => {
-                   fModels[m.id] = 100;
-                   fResets[m.id] = "Безлимитно";
-                });
-            }
-            setModelPercentages(fModels);
-            setModelResets(fResets);
+            setModelPercentages(qData.models || {});
+            setModelResets(qData.resets || {});
+            setQuotaGroups(Array.isArray(qData.quota_groups) ? qData.quota_groups : []);
             setTier(qData.tier !== undefined ? qData.tier : null);
-            quotaSuccess = true;
+            setPlanName(typeof qData.plan_name === 'string' && qData.plan_name.trim() ? qData.plan_name.trim() : null);
           }
         } catch (e) {
           console.error('Failed to fetch quota', e);
-        }
-
-        if (!quotaSuccess) {
-            setTotalCredits(9999);
-            setExpiresAt(Date.now() + 30 * 24 * 60 * 60 * 1000);
-            setCreditOverages(true);
-            const mockModels: Record<string, number> = {};
-            const mockResets: Record<string, string> = {};
-            modelList.forEach(m => {
-               mockModels[m.id] = 100;
-               mockResets[m.id] = "Безлимитно";
-            });
-            setModelPercentages(mockModels);
-            setModelResets(mockResets);
-            setTier(3);
         }
 
         setConnected(true);
@@ -762,12 +929,14 @@ export default function App() {
     setConnected(false);
     setModels([]);
     setModelResets({});
+    setQuotaGroups([]);
     setError('');
     setTier(null);
+    setPlanName(null);
   };
 
   const handleRefresh = () => {
-    validateToken(token, serverUrl);
+    validateToken(token, serverUrl, true);
   };
 
   const handleLaunchTool = async (type: string) => {
@@ -827,7 +996,6 @@ export default function App() {
   useEffect(() => {
     if (!connected || !token) return;
     const fetchQuota = async () => {
-      let quotaSuccess = false;
       try {
         const qRes = await rustFetch(`${serverUrl}/v1/quota`, {
           headers: { 'Authorization': `Bearer ${token}` },
@@ -837,38 +1005,14 @@ export default function App() {
           setTotalCredits(qData.total_credits);
           setExpiresAt(qData.expires_at || null);
           setCreditOverages(qData.enable_credit_overages);
-          
-          let fModels = qData.models || {};
-          let fResets = qData.resets || {};
-          if (Object.keys(fModels).length === 0) {
-              models.forEach(m => {
-                 fModels[m.id] = 100;
-                 fResets[m.id] = "Безлимитно";
-              });
-          }
-          
-          setModelPercentages(fModels);
-          setModelResets(fResets);
+          setModelPercentages(qData.models || {});
+          setModelResets(qData.resets || {});
+          setQuotaGroups(Array.isArray(qData.quota_groups) ? qData.quota_groups : []);
           setTier(qData.tier !== undefined ? qData.tier : null);
-          quotaSuccess = true;
+          setPlanName(typeof qData.plan_name === 'string' && qData.plan_name.trim() ? qData.plan_name.trim() : null);
         }
-      } catch (e) {
-        // ignore periodic failures
-      }
-
-      if (!quotaSuccess) {
-          setTotalCredits(9999);
-          setExpiresAt(Date.now() + 30 * 24 * 60 * 60 * 1000);
-          setCreditOverages(true);
-          const mockModels: Record<string, number> = {};
-          const mockResets: Record<string, string> = {};
-          models.forEach(m => {
-             mockModels[m.id] = 100;
-             mockResets[m.id] = "Безлимитно";
-          });
-          setModelPercentages(mockModels);
-          setModelResets(mockResets);
-          setTier(3);
+      } catch {
+        // Keep last known quota on transient poll errors instead of faking 100%.
       }
     };
     const interval = setInterval(fetchQuota, 10000);
@@ -904,20 +1048,45 @@ export default function App() {
   const apiBaseUrl = `${serverUrl.replace(/\/+$/, '')}/v1`;
   const apiChatEndpoint = `${apiBaseUrl}/chat/completions`;
   const apiModelsEndpoint = `${apiBaseUrl}/models`;
+  const buildCopilotModelEntry = (model: ModelInfo) => {
+    const entry: Record<string, unknown> = {
+      id: model.id,
+      name: model.display_name || formatModelName(model.id),
+      url: apiChatEndpoint,
+      toolCalling: model.supports_tools ?? true,
+      vision: model.supports_images ?? false,
+    };
+    if (model.supports_reasoning_effort && model.supports_reasoning_effort.length > 0) {
+      entry.thinking = true;
+      entry.supportsReasoningEffort = model.supports_reasoning_effort;
+    } else if (model.thinking) {
+      entry.thinking = true;
+    }
+    if (model.context_window) entry.maxInputTokens = model.context_window;
+    if (model.max_output_tokens) entry.maxOutputTokens = model.max_output_tokens;
+    return entry;
+  };
+  const exampleModel = models.find(m => m.supports_reasoning_effort?.length) || models[0];
   const apiConfigExample = JSON.stringify([{
     name: 'Antigravity',
     vendor: 'customendpoint',
     apiKey: '${input:antigravityApiKey}',
     apiType: 'chat-completions',
-    models: [{
-      id: 'MODEL_ID',
-      name: 'Antigravity model',
-      url: apiChatEndpoint,
-      toolCalling: true,
-      vision: false,
-      maxInputTokens: 32768,
-      maxOutputTokens: 8192,
-    }],
+    models: [
+      exampleModel
+        ? buildCopilotModelEntry(exampleModel)
+        : {
+            id: 'claude-opus-5-5',
+            name: 'Claude Opus 5.5',
+            url: apiChatEndpoint,
+            toolCalling: true,
+            vision: true,
+            thinking: true,
+            supportsReasoningEffort: ['low', 'medium', 'high'],
+            maxInputTokens: 1000000,
+            maxOutputTokens: 128000,
+          },
+    ],
   }], null, 2);
   const apiExampleRequest = getOS() === 'windows'
     ? [
@@ -1387,14 +1556,21 @@ export default function App() {
             </div>
             <div className="text-3xl font-bold text-emerald-400 mb-1">{t.active}</div>
             <div className="flex items-center text-xs text-gray-500 space-x-2 truncate">
-              {tier !== null && tier > 0 && (
+              {planName ? (
+                <>
+                  <span className="font-semibold text-gray-300 truncate" title={planName}>
+                    {t.plan}: {planName}
+                  </span>
+                  <span className="w-1 h-1 rounded-full bg-gray-600 shrink-0" />
+                </>
+              ) : tier !== null && tier > 0 ? (
                 <>
                   <span className="font-semibold text-gray-300">
                     {t.plan} X{tier}
                   </span>
-                  <span className="w-1 h-1 rounded-full bg-gray-600" />
+                  <span className="w-1 h-1 rounded-full bg-gray-600 shrink-0" />
                 </>
-              )}
+              ) : null}
               <span className="truncate">
                 {expiresAt ? `${getRemainingDays(expiresAt)} ${t.daysLeft}` : t.tokenAuth}
               </span>
@@ -1585,57 +1761,121 @@ export default function App() {
               </div>
             </div>
 
+            {quotaGroups.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-4">
+                {quotaGroups.map(group => {
+                  const isClaudeGroup =
+                    group.display_name.toLowerCase().includes('claude') ||
+                    group.display_name.toLowerCase().includes('gpt');
+                  const accent = isClaudeGroup
+                    ? 'from-orange-500 to-amber-400'
+                    : 'from-blue-500 to-cyan-400';
+                  return (
+                    <div
+                      key={group.display_name}
+                      className="px-4 py-3 bg-black/25 border border-white/10 rounded-xl space-y-2.5"
+                    >
+                      <div className="flex items-center space-x-2">
+                        <div className={`w-2 h-2 rounded-full bg-gradient-to-r ${accent}`} />
+                        <span className="text-xs font-semibold text-gray-200 truncate">
+                          {group.display_name}
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        {group.buckets.map(b => {
+                          const label =
+                            b.window === '5h' || b.bucket_id.endsWith('-5h')
+                              ? t.quota5h
+                              : b.window === 'weekly' || b.bucket_id.endsWith('-weekly')
+                                ? t.quotaWeekly
+                                : b.window || b.bucket_id;
+                          const bColor =
+                            b.percent === 0
+                              ? 'text-rose-400 font-semibold'
+                              : b.percent <= 20
+                                ? 'text-amber-400 font-semibold'
+                                : 'text-gray-300';
+                          const bBar =
+                            b.percent === 0
+                              ? 'from-rose-500 to-red-500'
+                              : b.percent <= 20
+                                ? 'from-amber-500 to-orange-400'
+                                : accent;
+                          return (
+                            <div key={b.bucket_id || b.window} className="space-y-1">
+                              <div className="flex items-center justify-between text-[11px] gap-2">
+                                <span className="text-gray-400">{label}</span>
+                                <div className="flex items-center space-x-1.5">
+                                  {b.reset_time && <CountdownTimer resetTime={b.reset_time} />}
+                                  <span className={`font-mono ${bColor}`}>{b.percent}%</span>
+                                </div>
+                              </div>
+                              <div className="w-full bg-white/10 rounded-full h-1 overflow-hidden">
+                                <div
+                                  className={`h-1 rounded-full bg-gradient-to-r ${bBar}`}
+                                  style={{ width: `${Math.min(100, Math.max(0, b.percent))}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {models.map(model => {
                 const catInfo = getModelCategory(model.id);
-                const pct = modelPercentages[model.id] 
-                  ?? modelPercentages[model.id.replace('-thinking', '')]
-                  ?? modelPercentages[model.id.replace(/-high|-medium|-low|-tiered/g, '')]
-                  ?? modelPercentages[model.id.replace(/-high|-medium|-tiered/g, '-low')]
-                  ?? modelPercentages[model.id.replace('-thinking', '').replace(/-high|-medium|-low|-tiered/g, '')]
-                  ?? (() => {
-                    const base = model.id.replace(/-thinking|-high|-medium|-low|-tiered/g, '');
-                    const match = Object.keys(modelPercentages).find(k => k.startsWith(base) || base.startsWith(k.replace(/-high|-medium|-low|-tiered/g, '')));
-                    return match ? modelPercentages[match] : undefined;
-                  })();
-                const resetTime = modelResets[model.id]
-                  ?? modelResets[model.id.replace('-thinking', '')]
-                  ?? modelResets[model.id.replace(/-high|-medium|-low|-tiered/g, '')]
-                  ?? modelResets[model.id.replace(/-high|-medium|-tiered/g, '-low')]
-                  ?? modelResets[model.id.replace('-thinking', '').replace(/-high|-medium|-low|-tiered/g, '')]
-                  ?? (() => {
-                    const base = model.id.replace(/-thinking|-high|-medium|-low|-tiered/g, '');
-                    const match = Object.keys(modelResets).find(k => k.startsWith(base) || base.startsWith(k.replace(/-high|-medium|-low|-tiered/g, '')));
-                    return match ? modelResets[match] : undefined;
-                  })();
+                const displayTitle = model.display_name || formatModelName(model.id);
+                const { pct, resetTime } = getModelQuota(model, modelPercentages, modelResets);
+                const pctColor =
+                  pct === 0
+                    ? 'text-rose-400 font-semibold'
+                    : pct !== undefined && pct <= 20
+                      ? 'text-amber-400 font-semibold'
+                      : 'text-gray-400';
+                const barGradient =
+                  pct === 0
+                    ? 'from-rose-500 to-red-500'
+                    : pct !== undefined && pct <= 20
+                      ? 'from-amber-500 to-orange-400'
+                      : catInfo.color;
                 return (
                   <button
                     type="button"
                     key={model.id}
-                    onClick={() => setDetailsModel(model)}
-                    aria-label={`${formatModelName(model.id)} — ${t.modelDetailsHint}`}
-                    className="flex flex-col space-y-2 px-4 py-3 text-left bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 rounded-xl transition-colors group/model focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+                    onClick={() => {
+                      setDetailsCopied(false);
+                      setDetailsModel(model);
+                    }}
+                    aria-label={`${displayTitle} — ${t.modelDetailsHint}`}
+                    className={`flex flex-col space-y-2 px-4 py-3 text-left bg-white/[0.03] hover:bg-white/[0.06] border rounded-xl transition-colors group/model focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 ${
+                      pct === 0 ? 'border-rose-500/25' : 'border-white/5'
+                    }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center space-x-3 min-w-0">
                         <div className={`w-2 h-2 rounded-full bg-gradient-to-r ${catInfo.color} flex-shrink-0`} />
                         <span className="text-sm text-gray-300 truncate group-hover/model:text-white transition-colors" title={model.id}>
-                          {formatModelName(model.id)}
+                          {displayTitle}
                         </span>
                       </div>
-                      <div className="flex items-center space-x-1.5">
+                      <div className="flex items-center space-x-1.5 shrink-0">
                         {pct !== undefined && resetTime && resetTime !== "Безлимитно" && (
                           <CountdownTimer resetTime={resetTime} />
                         )}
                         {pct !== undefined && (
-                          <span className="text-[10px] text-gray-500 font-mono">{pct}%</span>
+                          <span className={`text-[10px] font-mono ${pctColor}`}>{pct}%</span>
                         )}
                         <Info className="w-3.5 h-3.5 text-gray-600 group-hover/model:text-gray-400 transition-colors shrink-0" aria-hidden="true" />
                       </div>
                     </div>
                     {pct !== undefined && (
                       <div className="w-full bg-white/10 rounded-full h-1 mt-1 overflow-hidden">
-                        <div className={`h-1 rounded-full bg-gradient-to-r ${catInfo.color}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}></div>
+                        <div className={`h-1 rounded-full bg-gradient-to-r ${barGradient}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}></div>
                       </div>
                     )}
                   </button>
@@ -2059,24 +2299,85 @@ export default function App() {
               </div>
 
               <dl className="space-y-2">
-                {[
-                  { label: t.mdModelId, value: <code className="text-xs font-mono text-gray-400 bg-black/40 border border-white/10 rounded px-1.5 py-0.5 break-all">{detailsModel.id}</code> },
-                  { label: t.mdDisplayName, value: <span className="text-xs text-gray-200">{detailsModel.display_name || formatModelName(detailsModel.id)}</span> },
-                  { label: t.mdOwnedBy, value: detailsModel.owned_by ? <span className="text-xs text-gray-200">{detailsModel.owned_by}</span> : <span className="text-xs text-gray-500 italic">{t.mdNotProvided}</span> },
-                  { label: t.mdContextWindow, value: formatTokenCount(detailsModel.context_window, t) },
-                  { label: t.mdMaxOutput, value: formatTokenCount(detailsModel.max_output_tokens, t) },
-                  { label: t.mdImageInput, value: formatSupportLabel(detailsModel.supports_images, t) },
-                  { label: t.mdToolSupport, value: formatSupportLabel(detailsModel.supports_tools, t) },
-                ].map(row => (
-                  <div key={row.label} className="flex items-start justify-between gap-3 px-3 py-2 bg-white/[0.03] border border-white/5 rounded-xl">
-                    <dt className="text-xs text-gray-400 shrink-0">{row.label}</dt>
-                    <dd className="text-right min-w-0">{row.value}</dd>
-                  </div>
-                ))}
+                {(() => {
+                  const dq = getModelQuota(detailsModel, modelPercentages, modelResets);
+                  const singleEffort = splitEffortSuffix(detailsModel.id)?.[1];
+                  const reasoningModes =
+                    detailsModel.supports_reasoning_effort && detailsModel.supports_reasoning_effort.length > 0
+                      ? detailsModel.supports_reasoning_effort
+                      : singleEffort
+                        ? [singleEffort]
+                        : detailsModel.id.endsWith('-thinking')
+                          ? ['thinking']
+                          : [];
+                  const rows = [
+                    { label: t.mdModelId, value: <code className="text-xs font-mono text-gray-400 bg-black/40 border border-white/10 rounded px-1.5 py-0.5 break-all">{detailsModel.id}</code> },
+                    { label: t.mdDisplayName, value: <span className="text-xs text-gray-200">{detailsModel.display_name || formatModelName(detailsModel.id)}</span> },
+                    { label: t.mdOwnedBy, value: detailsModel.owned_by ? <span className="text-xs text-gray-200">{detailsModel.owned_by}</span> : <span className="text-xs text-gray-500 italic">{t.mdNotProvided}</span> },
+                    {
+                      label: t.mdQuotaRemaining,
+                      value: dq.pct !== undefined ? (
+                        <div className="flex items-center justify-end gap-1.5">
+                          {dq.resetTime && dq.resetTime !== "Безлимитно" && <CountdownTimer resetTime={dq.resetTime} />}
+                          <span className={`text-xs font-mono ${dq.pct === 0 ? 'text-rose-400 font-semibold' : dq.pct <= 20 ? 'text-amber-400 font-semibold' : 'text-emerald-300'}`}>{dq.pct}%</span>
+                        </div>
+                      ) : <span className="text-xs text-gray-500 italic">{t.mdNotProvided}</span>,
+                    },
+                    {
+                      label: t.mdReasoningEffort,
+                      value: reasoningModes.length > 0 ? (
+                        <div className="flex items-center justify-end flex-wrap gap-1">
+                          {reasoningModes.map(level => (
+                            <span key={level} className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-blue-500/15 border border-blue-500/30 text-blue-300">{level}</span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-rose-300">{t.mdNo}</span>
+                      ),
+                    },
+                    ...(detailsModel.reasoning_variants && Object.keys(detailsModel.reasoning_variants).length > 0 ? [{
+                      label: t.mdVariants,
+                      value: (
+                        <div className="flex flex-col items-end gap-0.5">
+                          {Object.entries(detailsModel.reasoning_variants).map(([effort, vid]) => (
+                            <span key={effort} className="text-[11px] font-mono text-gray-400">
+                              <span className="text-gray-300">{effort}</span> → {vid}
+                            </span>
+                          ))}
+                        </div>
+                      ),
+                    }] : []),
+                    { label: t.mdContextWindow, value: formatTokenCount(detailsModel.context_window, t) },
+                    { label: t.mdMaxOutput, value: formatTokenCount(detailsModel.max_output_tokens, t) },
+                    { label: t.mdImageInput, value: formatSupportLabel(detailsModel.supports_images, t) },
+                    { label: t.mdToolSupport, value: formatSupportLabel(detailsModel.supports_tools, t) },
+                  ];
+                  return rows.map(row => (
+                    <div key={row.label} className="flex items-start justify-between gap-3 px-3 py-2 bg-white/[0.03] border border-white/5 rounded-xl">
+                      <dt className="text-xs text-gray-400 shrink-0">{row.label}</dt>
+                      <dd className="text-right min-w-0">{row.value}</dd>
+                    </div>
+                  ));
+                })()}
               </dl>
             </div>
 
-            <div className="p-4 sm:p-6 border-t border-white/10 flex justify-end shrink-0">
+            <div className="p-4 sm:p-6 border-t border-white/10 flex items-center justify-between gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(JSON.stringify(buildCopilotModelEntry(detailsModel), null, 2));
+                    setDetailsCopied(true);
+                    window.setTimeout(() => setDetailsCopied(false), 2000);
+                  } catch {
+                    setDetailsCopied(false);
+                  }
+                }}
+                className="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-200 text-xs font-semibold rounded-xl transition-colors"
+              >
+                {detailsCopied ? t.apiCopied : t.mdCopyCopilot}
+              </button>
               <button
                 onClick={() => setDetailsModel(null)}
                 className="px-6 py-2.5 bg-white text-black font-semibold rounded-xl hover:bg-gray-200 transition-colors"

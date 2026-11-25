@@ -99,6 +99,7 @@ fn map_finish_reason(reason: &str) -> Result<&'static str, AppError> {
         .iter()
         .any(|name| name.eq_ignore_ascii_case(reason))
     {
+        tracing::warn!(%reason, "upstream finishReason mapped to content_filter");
         return Ok("content_filter");
     }
     Err(bad(format!(
@@ -664,6 +665,14 @@ impl StreamState {
             }
         };
 
+        if finish_reason == "content_filter" || (!self.role_emitted && !self.had_tool_calls) {
+            tracing::warn!(
+                %finish_reason,
+                role_emitted = self.role_emitted,
+                had_tool_calls = self.had_tool_calls,
+                "OpenAI stream finished with content_filter or empty output"
+            );
+        }
         let mut out = Vec::new();
         if !self.role_emitted {
             self.role_emitted = true;

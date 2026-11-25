@@ -33,6 +33,13 @@ pub struct AppState {
     pub(crate) openai_projects: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
     pub(crate) models_cache:
         Arc<tokio::sync::Mutex<HashMap<String, (std::time::Instant, Vec<serde_json::Value>)>>>,
+    pub(crate) account_plans: Arc<
+        tokio::sync::Mutex<
+            HashMap<String, (std::time::Instant, (String, String, Option<String>))>,
+        >,
+    >,
+    pub(crate) quota_summary_cache:
+        Arc<tokio::sync::Mutex<HashMap<String, (std::time::Instant, serde_json::Value)>>>,
 }
 
 impl AppState {
@@ -63,6 +70,8 @@ impl AppState {
             tunnel_proxies: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             openai_projects: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             models_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            account_plans: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            quota_summary_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 }
