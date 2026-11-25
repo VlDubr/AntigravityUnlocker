@@ -411,7 +411,8 @@ fn start_antigravity_ide(ide_type: &str, custom_exe_path: Option<&str>) -> Resul
 
     // Prepare proxy environment flags
     let proxy_addr = "http://127.0.0.1:8047";
-    let proxy_args = ["--proxy-server=http://127.0.0.1:8047", "--proxy-bypass-list=<-loopback>"];
+    // The hub serves its UI over loopback HTTPS; never send that traffic to the gateway.
+    let proxy_args = ["--proxy-server=http://127.0.0.1:8047", "--proxy-bypass-list=localhost;127.0.0.1;[::1]"];
 
     #[cfg(target_os = "windows")]
     {

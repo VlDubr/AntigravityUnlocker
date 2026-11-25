@@ -11,12 +11,13 @@ embedded in the shipped binary (not user secrets). The refresh_token IS a user
 secret and is only read from the local keyring, never from the binary.
 
 Usage:
-    python extract-creds.py [--binary PATH] [--keyring] [--json]
+    python extract-creds.py [--binary PATH] [--keyring] [--all-clients] [--json]
 
 Defaults:
-    --binary  auto-detected agy binary (~/.gemini/bin/agy[.exe])
-    --keyring also attempt to read gemini:antigravity from the OS keyring
-    --json    emit machine-readable JSON instead of a human summary
+    --binary      auto-detected agy binary (~/.gemini/bin/agy[.exe])
+    --keyring     also attempt to read gemini:antigravity from the OS keyring
+    --all-clients include unrelated OAuth clients for diagnostics
+    --json        emit machine-readable JSON instead of a human summary
 
 Exit codes: 0 = found client pair, 1 = not found, 2 = binary missing.
 """
@@ -160,6 +161,44 @@ def pair_candidates(ids: list[str], secrets: list[str],
     return out
 
 
+def _read_windows_generic_credential(target: str) -> str | None:
+    """Read a generic credential blob via advapi32 CredReadW.
+
+    Returns the decoded UTF-8 payload, '' for an empty blob, None if absent.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    adv = ctypes.windll.advapi32
+
+    class CRED_ATTRIBUTE(ctypes.Structure):
+        _fields_ = [("Keyword", wintypes.LPWSTR), ("Flags", wintypes.DWORD),
+                    ("ValueSize", wintypes.DWORD), ("Value", ctypes.c_void_p)]
+
+    class CRED(ctypes.Structure):
+        _fields_ = [("Flags", wintypes.DWORD), ("Type", wintypes.DWORD),
+                    ("TargetName", wintypes.LPWSTR), ("Comment", wintypes.LPWSTR),
+                    ("LastWritten", wintypes.FILETIME),
+                    ("CredentialBlobSize", wintypes.DWORD),
+                    ("CredentialBlob", ctypes.c_void_p), ("Persist", wintypes.DWORD),
+                    ("AttributeCount", wintypes.DWORD),
+                    ("Attributes", ctypes.POINTER(CRED_ATTRIBUTE)),
+                    ("TargetAlias", wintypes.LPWSTR), ("UserName", wintypes.LPWSTR)]
+
+    PCRED = ctypes.POINTER(CRED)
+    adv.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                              ctypes.POINTER(PCRED)]
+    adv.CredFree.argtypes = [ctypes.c_void_p]
+    p = PCRED()
+    if not adv.CredReadW(target, 1, 0, ctypes.byref(p)):
+        return None
+    c = p.contents
+    n = c.CredentialBlobSize
+    blob = ctypes.string_at(c.CredentialBlob, n) if n else b""
+    adv.CredFree(p)
+    return blob.decode("utf-8", "replace")
+
+
 def read_keyring() -> dict | None:
     """Read gemini:antigravity generic credential from the OS keyring.
 
@@ -169,18 +208,12 @@ def read_keyring() -> dict | None:
     system = platform.system()
     try:
         if system == "Windows":
-            # WinRT PasswordVault projection is only available in Windows
-            # PowerShell 5.1, not PowerShell 7 (pwsh). Force powershell.exe.
-            ps = (
-                "$v = [Windows.Security.Credentials.PasswordVault,"
-                "Windows.Security.Credentials,ContentType=WindowsRuntime]::new(); "
-                "$c = $v.Retrieve('gemini:antigravity','antigravity'); "
-                "$c.RetrievePassword(); $c.Password"
-            )
-            raw = subprocess.check_output(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
-                text=True, stderr=subprocess.DEVNULL,
-            ).strip()
+            # The entry is a *generic* credential (wincred / CredWriteW).
+            # WinRT PasswordVault does NOT see generic credentials, so read
+            # it with CredReadW directly.
+            raw = _read_windows_generic_credential("gemini:antigravity")
+            if raw is None:
+                return None
         elif system == "Darwin":
             raw = subprocess.check_output(
                 ["security", "find-generic-password", "-s", "gemini",
@@ -214,6 +247,8 @@ def main() -> int:
                     help="path to agy binary (auto-detected if omitted)")
     ap.add_argument("--keyring", action="store_true",
                     help="also read gemini:antigravity from OS keyring")
+    ap.add_argument("--all-clients", action="store_true",
+                    help="show unrelated OAuth clients found in the binary")
     ap.add_argument("--json", action="store_true", help="emit JSON")
     args = ap.parse_args()
 
@@ -223,17 +258,23 @@ def main() -> int:
         return 2
 
     scan = scan_binary(binary)
-    pairs = pair_candidates(
+    all_pairs = pair_candidates(
         scan["client_ids"], scan["client_secrets"], scan["secret_long_runs"]
     )
+    pairs = all_pairs if args.all_clients else [
+        pair for pair in all_pairs if pair.get("recommended")
+    ]
     result = {
         "binary": scan["binary"],
         "binary_size": scan["binary_size"],
-        "client_ids_found": scan["client_ids"],
-        "client_secrets_found": scan["client_secrets"],
-        "secret_long_runs": scan["secret_long_runs"],
         "pairs": pairs,
     }
+    if args.all_clients:
+        result.update({
+            "client_ids_found": scan["client_ids"],
+            "client_secrets_found": scan["client_secrets"],
+            "secret_long_runs": scan["secret_long_runs"],
+        })
     if args.keyring:
         result["keyring"] = read_keyring()
 
@@ -241,17 +282,21 @@ def main() -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(f"Binary: {scan['binary']} ({scan['binary_size']:,} bytes)")
-        print(f"client_id matches: {len(scan['client_ids'])}")
-        for cid in scan["client_ids"]:
-            print(f"  {cid}")
-        print(f"client_secret matches: {len(scan['client_secrets'])}")
-        for sec in scan["client_secrets"]:
-            print(f"  {sec}")
-        print("\nCandidate pairs:")
+        if args.all_clients:
+            print(f"client_id matches: {len(scan['client_ids'])}")
+            for cid in scan["client_ids"]:
+                print(f"  {cid}")
+            print(f"client_secret matches: {len(scan['client_secrets'])}")
+            for sec in scan["client_secrets"]:
+                print(f"  {sec}")
+            print("\nCandidate pairs:")
+        else:
+            print("\nAntigravity 2.0 OAuth credentials:")
         for p in pairs:
             print(f"  client_id     = {p.get('client_id')}")
             print(f"  client_secret = {p.get('client_secret')}")
-            print(f"  source        = {p.get('source')}")
+            if args.all_clients:
+                print(f"  source        = {p.get('source')}")
             print()
         if args.keyring:
             kr = result.get("keyring")

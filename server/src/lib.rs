@@ -6,10 +6,13 @@ pub mod oauth;
 pub mod tunnel;
 pub mod upstream;
 
+mod chat_request;
+mod chat_response;
+
 use crate::config::Config;
 use crate::tunnel::{ConnectProxy, TunnelRegistry};
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -27,6 +30,7 @@ pub struct AppState {
     /// Lazily spawned loopback CONNECT bridges, one per API key, used for
     /// tunneled upstream egress (`routing_mode != "direct"`).
     pub tunnel_proxies: Arc<tokio::sync::Mutex<HashMap<String, Arc<ConnectProxy>>>>,
+    pub(crate) openai_projects: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -55,6 +59,7 @@ impl AppState {
             oauth,
             tunnel: Arc::new(TunnelRegistry::new(max_workers_per_key)),
             tunnel_proxies: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            openai_projects: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -75,6 +80,7 @@ pub fn build_router(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", get(handlers::health::health))
         .route("/v1/models", get(handlers::models::models))
+        .route("/v1/chat/completions", any(handlers::chat::completions))
         .route("/v1/quota", get(handlers::quota::quota))
         .route("/v1/quota/config", post(handlers::quota::quota_config))
         .route("/v1/client-update", get(handlers::update::client_update))
@@ -83,8 +89,6 @@ pub fn build_router(state: AppState) -> axum::Router {
             get(handlers::update::client_update_download),
         )
         .route("/v1/tunnel", get(tunnel::tunnel_ws))
-        // Placeholder routes wired up by follow-up tasks (chat) will be
-        // added on this router, before the catch-all forward fallback.
         .fallback(handlers::forward::forward)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)

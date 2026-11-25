@@ -56,6 +56,8 @@ pub struct Config {
     pub models: ModelsConfig,
     #[serde(default)]
     pub updates: UpdatesConfig,
+    #[serde(default)]
+    pub openai: OpenAiConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -192,7 +194,8 @@ impl Default for UpstreamConfig {
             passthrough_unknown_v1: true,
             connect_timeout_secs: 15,
             stream_idle_timeout_secs: 300,
-            user_agent: String::new(),
+            user_agent: "antigravity/hub/2.35.0 (aidev_client; os_type=windows; arch=amd64)"
+                .to_string(),
             extra_headers: HashMap::new(),
         }
     }
@@ -229,6 +232,12 @@ impl Default for TunnelConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ModelsConfig {
     pub advertise: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OpenAiConfig {
+    pub enabled: bool,
 }
 
 impl Default for ModelsConfig {
@@ -276,6 +285,7 @@ impl Default for Config {
             tunnel: TunnelConfig::default(),
             models: ModelsConfig::default(),
             updates: UpdatesConfig::default(),
+            openai: OpenAiConfig::default(),
         }
     }
 }
@@ -319,6 +329,12 @@ impl Config {
                 Err(_) => tracing::warn!(value = %v, "ignoring invalid AG_TUNNEL_ENABLED"),
             }
         }
+        if let Some(v) = var("AG_OPENAI_ENABLED") {
+            match v.parse::<bool>() {
+                Ok(b) => self.openai.enabled = b,
+                Err(_) => tracing::warn!(value = %v, "ignoring invalid AG_OPENAI_ENABLED"),
+            }
+        }
         if let Some(v) = var("AG_GOOGLE_CLIENT_ID") {
             self.google.client_id = v;
         }
@@ -344,6 +360,16 @@ impl Config {
                     id: "main".to_string(),
                     refresh_token: v,
                     project_id: String::new(),
+                });
+            }
+        }
+        if let Some(v) = var("AG_GOOGLE_PROJECT_ID") {
+            if let Some(acc) = self.google.accounts.iter_mut().find(|a| a.id == "main") {
+                acc.project_id = v;
+            } else {
+                self.google.accounts.push(AccountConfig {
+                    project_id: v,
+                    ..AccountConfig::default()
                 });
             }
         }
@@ -419,6 +445,7 @@ client_id = "cid"
         assert_eq!(cfg.tunnel.max_workers_per_key, 32);
         assert_eq!(cfg.google.token_url, "https://oauth2.googleapis.com/token");
         assert_eq!(cfg.google.refresh_skew_secs, 120);
+        assert!(!cfg.openai.enabled);
         assert_eq!(cfg.auth.keys.len(), 1);
         assert_eq!(cfg.auth.keys[0].account_id, "main");
         assert_eq!(cfg.auth.keys[0].tier, 3);
@@ -436,7 +463,10 @@ client_id = "cid"
                 "AG_LISTEN_ADDR" => Some("127.0.0.1:9999".to_string()),
                 "AG_UPSTREAM_BASE_URL" => Some("https://upstream.example".to_string()),
                 "AG_TUNNEL_ENABLED" => Some("false".to_string()),
+                "AG_OPENAI_ENABLED" => Some("true".to_string()),
                 "AG_CLIENT_KEY" => Some("env-key".to_string()),
+                "AG_GOOGLE_REFRESH_TOKEN" => Some("refresh".to_string()),
+                "AG_GOOGLE_PROJECT_ID" => Some("project".to_string()),
                 _ => None,
             }
         };
@@ -444,9 +474,13 @@ client_id = "cid"
         assert_eq!(cfg.server.listen_addr, "127.0.0.1:9999");
         assert_eq!(cfg.upstream.base_url, "https://upstream.example");
         assert!(!cfg.tunnel.enabled);
+        assert!(cfg.openai.enabled);
         assert_eq!(cfg.auth.keys.len(), 1);
         assert_eq!(cfg.auth.keys[0].key, "env-key");
         assert_eq!(cfg.auth.keys[0].account_id, "main");
+        assert_eq!(cfg.google.accounts.len(), 1);
+        assert_eq!(cfg.google.accounts[0].refresh_token, "refresh");
+        assert_eq!(cfg.google.accounts[0].project_id, "project");
     }
 
     #[test]

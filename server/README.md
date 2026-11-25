@@ -47,8 +47,10 @@ environment variables, which win over the file:
 | `AG_GOOGLE_CLIENT_ID` | `[google] client_id` | OAuth client id |
 | `AG_GOOGLE_CLIENT_SECRET` | `[google] client_secret` | OAuth client secret |
 | `AG_GOOGLE_REFRESH_TOKEN` | `[[google.accounts]]` refresh_token of account `main` | the real Google refresh token |
+| `AG_GOOGLE_PROJECT_ID` | `[[google.accounts]]` project_id of account `main` | optional Cloud Code project override |
 | `AG_UPSTREAM_BASE_URL` | `[upstream] base_url` | upstream API base |
 | `AG_TUNNEL_ENABLED` | `[tunnel] enabled` | `true`/`false` |
+| `AG_OPENAI_ENABLED` | `[openai] enabled` | enable the Chat Completions adapter; default `false` |
 
 Keep secrets out of the TOML file in production; use a root-owned
 `EnvironmentFile=/etc/antigravity-server.env` with mode 0600 (the systemd
@@ -66,8 +68,11 @@ token.
 
 Correct order:
 
-1. Log into the Antigravity IDE **natively** (proxy disabled) at least once so
-   the real Google token is in the OS keyring.
+1. Stop the Client's proxy and close the Client. If it was used before on
+   Windows, remove its placeholder credential with
+   `cmdkey /delete:gemini:antigravity`. Log into the Antigravity IDE
+   **natively** (proxy disabled) at least once so the real Google token is in
+   the OS keyring.
 2. **Extract the token now — before opening/activating the Antigravity
    Client** (steps below).
 3. Put the extracted value into `AG_GOOGLE_REFRESH_TOKEN` (or
@@ -92,29 +97,43 @@ Take the `.token.refresh_token` field.
 
 ### Windows
 
-The entry is a *generic credential* named `gemini:antigravity` (written via
-`cmdkey /generic:gemini:antigravity /user:antigravity`). `cmdkey /list`
-confirms the entry exists but can never reveal its password. Read the
-secret with PowerShell:
+The entry is a *generic credential* named `gemini:antigravity` with user
+`antigravity`. The client writes it with the Windows API (`CredWriteW`).
+**Do not use `cmdkey /pass:<json>`**: for a JSON payload it silently stores
+an *empty* blob, which leaves Antigravity signed out. `cmdkey /list` only
+confirms existence, never reveals the secret. WinRT `PasswordVault` does
+not see generic credentials either.
+
+Read or write the blob with the bundled helper (no extra installs):
 
 ```powershell
-# Option A: CredentialManager module
-Install-Module CredentialManager -Scope CurrentUser
-$cred = Get-StoredCredential -Target 'gemini:antigravity' -AsPSCredential
-$json = $cred.GetNetworkCredential().Password
-($json | ConvertFrom-Json).token.refresh_token
+# Read the current payload (prints the JSON; take .token.refresh_token)
+python server/tools/extract-creds.py --keyring
 
-# Option B: no module, WinRT PasswordVault (Windows.Security.Credentials)
-$vault = [Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new()
-$cred  = $vault.Retrieve('gemini:antigravity', 'antigravity')
-$cred.RetrievePassword()
-# ...the returned string is the same JSON payload; parse .token.refresh_token
+# Write a payload yourself (e.g. after a native sign-in elsewhere).
+# Put the JSON in a local file, never in chat or shell history:
+@'
+import ctypes, json
+from ctypes import wintypes
+from pathlib import Path
+payload = Path("payload.json").read_bytes()   # {"token":{...},"auth_method":"consumer"}
+adv = ctypes.windll.advapi32
+class ATTR(ctypes.Structure):
+    _fields_=[("Keyword",wintypes.LPWSTR),("Flags",wintypes.DWORD),("ValueSize",wintypes.DWORD),("Value",ctypes.c_void_p)]
+class CRED(ctypes.Structure):
+    _fields_=[("Flags",wintypes.DWORD),("Type",wintypes.DWORD),("TargetName",wintypes.LPWSTR),("Comment",wintypes.LPWSTR),("LastWritten",wintypes.FILETIME),("CredentialBlobSize",wintypes.DWORD),("CredentialBlob",ctypes.c_void_p),("Persist",wintypes.DWORD),("AttributeCount",wintypes.DWORD),("Attributes",ctypes.POINTER(ATTR)),("TargetAlias",wintypes.LPWSTR),("UserName",wintypes.LPWSTR)]
+buf=ctypes.create_string_buffer(payload)
+c=CRED(); c.Type=1; c.TargetName="gemini:antigravity"; c.UserName="antigravity"
+c.CredentialBlobSize=len(payload); c.CredentialBlob=ctypes.cast(buf,ctypes.c_void_p); c.Persist=2
+assert adv.CredWriteW(ctypes.byref(c),0), ctypes.GetLastError()
+print("written", len(payload), "bytes")
+'@ | python -
 ```
 
-Either command prints the JSON payload shown above; take
-`.token.refresh_token`. Run it from an elevated prompt only if the
-credential was created in another logon session (normal user-session reads
-work without elevation).
+Alternatively the `CredentialManager` PowerShell module works for reading:
+`Get-StoredCredential -Target 'gemini:antigravity' -AsPSCredential`.
+Run from an elevated prompt only if the credential was created in another
+logon session (normal user-session reads work without elevation).
 
 ### macOS
 
@@ -143,13 +162,16 @@ Run the bundled extractor against your local Antigravity hub/CLI binary
 (`agy`):
 
 ```sh
-python server/tools/extract-creds.py            # scan binary for the OAuth pair
+python server/tools/extract-creds.py            # only the Antigravity 2.0 OAuth pair
 python server/tools/extract-creds.py --keyring  # also read your refresh_token
 python server/tools/extract-creds.py --json     # machine-readable output
+python server/tools/extract-creds.py --all-clients  # diagnostic: include unrelated clients
 ```
 
 It auto-detects `~/.gemini/bin/agy[.exe]` (override with `--binary PATH`),
-streams the binary, and reports every embedded `client_id` / `client_secret`.
+streams the binary, and reports only the recommended Antigravity 2.0 consumer
+OAuth pair by default. Use `--all-clients` only when diagnosing binary string
+matches; unrelated enterprise OAuth clients are not valid alternatives.
 
 **Confirmed in agy 1.5.16:** the consumer Antigravity desktop `client_id` is
 the one found next to `GetHubOAuthAccessToken` / `CLOUD_CODE_URL` in the
@@ -168,6 +190,32 @@ prefer the recommended consumer pair.
 The `refresh_token` you extract must have been issued for a client whose
 scopes cover the Antigravity/cloudcode-pa API; a token minted by an unrelated
 OAuth app will be rejected by the upstream.
+
+If requests return HTTP 502 and the service journal reports
+`oauth refresh failed` with `invalid_grant`, Google rejected the refresh token.
+Sign in natively again with the proxy disabled, then extract the new token
+before activating the Client. Update `AG_GOOGLE_REFRESH_TOKEN` in the protected
+environment file and restart the service. Extraction scripts cannot renew a
+revoked token without a new interactive sign-in. Do not paste tokens into chat.
+
+To install a newly extracted token on the VPS without exposing it in shell
+history, pipe it over SSH stdin and rewrite only that variable:
+
+```sh
+# local machine: token.txt holds ONLY the refresh_token value
+ssh root@<vps> 'tmp=$(mktemp) && cat > "$tmp" && \
+  sed -i "/^AG_GOOGLE_REFRESH_TOKEN=/d" /etc/antigravity-server.env && \
+  printf "AG_GOOGLE_REFRESH_TOKEN=%s\n" "$(cat "$tmp")" >> /etc/antigravity-server.env && \
+  rm -f "$tmp" && chmod 600 /etc/antigravity-server.env && \
+  systemctl restart antigravity-server' < token.txt
+```
+
+Then verify with a real chat request (see below); `/health` alone does not
+prove the token works.
+
+Antigravity 2.0 serves its desktop UI over loopback HTTPS. Chromium proxy
+settings must bypass `localhost`, `127.0.0.1` and `[::1]`; forcing loopback
+through the gateway can cause a black window with `ERR_EMPTY_RESPONSE`.
 
 ## Upstream
 
@@ -200,6 +248,82 @@ The Client then runs a local proxy on `127.0.0.1:8047` that forwards the IDE
 (profile `proxyBaseUrl`) to your server. All IDE traffic flows
 IDE → client local proxy → gateway server → upstream.
 
+## OpenAI-compatible Chat Completions
+
+The optional adapter translates text chat, streaming responses and function
+tool calls to the Cloud Code API. It does not implement the OpenAI Responses
+API, embeddings, image input or audio. A client must return tool-call IDs
+unchanged when it sends tool results.
+
+Enable the adapter in the server configuration or environment and restart the
+service:
+
+```sh
+# In the server's environment file:
+AG_OPENAI_ENABLED=true
+# Optional if automatic Cloud Code project discovery fails:
+# AG_GOOGLE_PROJECT_ID=your-cloud-code-project-id
+```
+
+When disabled, `/v1/chat/completions` keeps the existing passthrough behavior.
+When enabled, the server uses the configured account's `project_id` or asks
+Cloud Code for it. Personal Antigravity accounts use the managed project
+returned by `loadCodeAssist` (normally `aicode-consumers`); do not configure a
+Google Cloud Project ID for them. `AG_GOOGLE_PROJECT_ID` is an override for
+enterprise tiers that explicitly require a user-owned Cloud project. The server
+identifies itself with the Antigravity Hub User-Agent because other clients may
+be rejected from the personal free tier. The model list is configured by the
+server; it does not prove that a model is available to the Google account.
+End-to-end compatibility with a particular account and model must be verified
+against the upstream.
+
+Use the gateway API key, not the Google refresh token. Use HTTPS for remote
+connections; plain HTTP exposes both the key and conversation contents.
+
+```sh
+# Set AG_CLIENT_KEY locally without putting the real key in this command.
+curl --fail-with-body 'https://gateway.example/v1/models' \
+  -H "Authorization: Bearer $AG_CLIENT_KEY"
+
+curl --fail-with-body 'https://gateway.example/v1/chat/completions' \
+  -H "Authorization: Bearer $AG_CLIENT_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gemini-3-flash","messages":[{"role":"user","content":"Reply with OK"}]}'
+```
+
+### VS Code Chat / GitHub Copilot
+
+Open **Chat: Manage Language Models** from the Command Palette, select
+**Add Models**, then **Custom Endpoint** and **Chat Completions**. Enter the
+gateway key when prompted. In the generated `chatLanguageModels.json`, set the
+model endpoint to the full `/v1/chat/completions` URL and enable tool calling:
+
+```json
+[
+  {
+    "name": "Antigravity",
+    "vendor": "customendpoint",
+    "apiKey": "${input:antigravityApiKey}",
+    "apiType": "chat-completions",
+    "models": [
+      {
+        "id": "gemini-3-flash",
+        "name": "Antigravity model",
+        "url": "https://gateway.example/v1/chat/completions",
+        "toolCalling": true,
+        "vision": false,
+        "maxInputTokens": 32768,
+        "maxOutputTokens": 8192
+      }
+    ]
+  }
+]
+```
+
+Replace the URL and model ID, and adjust token limits to the selected model.
+Store the key in VS Code's secret input, not in the file. Select the model in
+Chat. BYOK supports Chat and agent workflows, not inline code completions.
+
 ## Reverse proxy warning (nginx / Caddy)
 
 If you terminate TLS in front of the server:
@@ -219,11 +343,13 @@ If you terminate TLS in front of the server:
 - Prefer **direct TLS or Caddy's automatic HTTPS** on the VPS over a
   hand-tuned nginx config; fewer knobs to get wrong for streaming.
 
-Caddy example:
+Caddy example (bind backend to localhost with `AG_LISTEN_ADDR=127.0.0.1:8045` so port 8045 is not exposed without TLS; `<vps-ip>.sslip.io` works without a custom domain):
 
 ```
 gateway.example.com {
-    reverse_proxy 127.0.0.1:8045
+    reverse_proxy 127.0.0.1:8045 {
+        flush_interval -1
+    }
 }
 ```
 
@@ -268,6 +394,7 @@ client IP mainly changes what IP fingerprint the upstream observes.
 | --- | --- | --- | --- |
 | GET | `/health` | none | liveness probe; `{"status":"ok"}` |
 | GET | `/v1/models` | Bearer key | OpenAI-style model list (`object:"list"`, `data[]`) |
+| POST | `/v1/chat/completions` | Bearer key | OpenAI-style text chat and tool calls when `[openai] enabled = true`; otherwise passthrough |
 | GET | `/v1/quota` | Bearer key | quota snapshot: `tier`, `total_credits`, `expires_at` (null or unix **seconds**), `enable_credit_overages`, `models:{}`, `resets:{}` |
 | POST | `/v1/quota/config` | Bearer key | body `{"enable_credit_overages": bool}`; flips the flag (persisted to `state_file`) |
 | GET | `/v1/client-update?platform=...` | none | update manifest; empty `version` when unconfigured; `platform=macos` normalizes to `mac-arm` |
@@ -284,9 +411,7 @@ server-side and never shown to the client.
 
 - No multi-tenant accounts, billing, or per-user quotas beyond the single
   owner's key metadata.
-- No OpenAI-schema translation — the gateway is a faithful pass-through of
-  the native upstream API (the `/v1/models` list is the only
-  OpenAI-shaped endpoint).
+- No translation for the OpenAI Responses, embeddings, image or audio APIs.
 - No browser OAuth flow — the server refreshes access tokens from a
   pre-extracted `refresh_token`; it cannot do an interactive sign-in.
 

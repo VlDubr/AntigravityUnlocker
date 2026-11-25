@@ -198,12 +198,10 @@ fn write_real_token_to_keyring(access_token: &str, refresh_token: &str, expiry: 
 
     #[cfg(target_os = "windows")]
     {
-        let _ = crate::process_utils::command("cmdkey.exe")
-            .args(["/delete:gemini:antigravity"])
-            .output();
-        let _ = crate::process_utils::command("cmdkey.exe")
-            .args(["/generic:gemini:antigravity", "/user:antigravity", &format!("/pass:{}", payload_json)])
-            .output();
+        // cmdkey.exe silently stores an EMPTY blob for JSON payloads (it treats
+        // the value as an interactive password), which leaves the IDE signed out.
+        // Write the generic credential through the Windows API instead.
+        windows::write_generic_credential("gemini:antigravity", "antigravity", payload_json.as_bytes())?;
     }
 
     #[cfg(target_os = "macos")]
@@ -217,6 +215,112 @@ fn write_real_token_to_keyring(access_token: &str, refresh_token: &str, expiry: 
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Security::Credentials::{
+        CredDeleteW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+    };
+    #[cfg(test)]
+    use windows_sys::Win32::Security::Credentials::{CredFree, CredReadW};
+
+    fn wide_null(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Write a generic credential with the exact blob bytes. `CredWriteW`
+    /// replaces an existing entry, so no delete is needed first.
+    pub fn write_generic_credential(target: &str, user: &str, blob: &[u8]) -> Result<(), String> {
+        if blob.len() > u32::MAX as usize {
+            return Err("credential blob too large".to_string());
+        }
+        let mut target_w = wide_null(target);
+        let mut user_w = wide_null(user);
+        let mut blob_mut = blob.to_vec();
+        let cred = CREDENTIALW {
+            Flags: 0,
+            Type: CRED_TYPE_GENERIC,
+            TargetName: target_w.as_mut_ptr(),
+            Comment: std::ptr::null_mut(),
+            LastWritten: unsafe { std::mem::zeroed() },
+            CredentialBlobSize: blob.len() as u32,
+            CredentialBlob: blob_mut.as_mut_ptr(),
+            Persist: CRED_PERSIST_LOCAL_MACHINE,
+            AttributeCount: 0,
+            Attributes: std::ptr::null_mut(),
+            TargetAlias: std::ptr::null_mut(),
+            UserName: user_w.as_mut_ptr(),
+        };
+        let ok = unsafe { CredWriteW(&cred, 0) };
+        if ok == 0 {
+            return Err(format!(
+                "CredWriteW failed for {} (Win32 error {})",
+                target,
+                unsafe { GetLastError() }
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn delete_generic_credential(target: &str) {
+        let target_w = wide_null(target);
+        unsafe {
+            CredDeleteW(target_w.as_ptr(), CRED_TYPE_GENERIC, 0);
+        }
+    }
+
+    /// Read back the stored blob; `None` when the entry does not exist.
+    #[cfg(test)]
+    pub fn read_generic_credential_blob(target: &str) -> Option<Vec<u8>> {
+        let target_w = wide_null(target);
+        let mut ptr: *mut CREDENTIALW = std::ptr::null_mut();
+        let ok = unsafe { CredReadW(target_w.as_ptr(), CRED_TYPE_GENERIC, 0, &mut ptr) };
+        if ok == 0 || ptr.is_null() {
+            return None;
+        }
+        let blob = unsafe {
+            let c = &*ptr;
+            let out = if c.CredentialBlobSize > 0 && !c.CredentialBlob.is_null() {
+                std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize).to_vec()
+            } else {
+                Vec::new()
+            };
+            CredFree(ptr as *const _);
+            out
+        };
+        Some(blob)
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_keyring_roundtrip_preserves_json_blob() {
+        let target = "antigravity-unlocker-selftest";
+        windows::delete_generic_credential(target);
+        let payload = serde_json::json!({
+            "token": {
+                "access_token": "IMPULS-selftest",
+                "token_type": "Bearer",
+                "refresh_token": "proxy_managed_refresh_token",
+                "expiry": "2099-01-01T00:00:00Z"
+            },
+            "auth_method": "consumer"
+        })
+        .to_string();
+
+        windows::write_generic_credential(target, "antigravity", payload.as_bytes())
+            .expect("CredWriteW must succeed");
+        let read = windows::read_generic_credential_blob(target).expect("entry must exist");
+        windows::delete_generic_credential(target);
+
+        assert_eq!(read, payload.as_bytes());
+        assert!(windows::read_generic_credential_blob(target).is_none());
+    }
 }
 
 /// Format timestamp as RFC3339 string
@@ -301,9 +405,7 @@ pub fn clear_keyring_credentials() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let _ = crate::process_utils::command("cmdkey.exe")
-            .args(["/delete:gemini:antigravity"])
-            .output();
+        windows::delete_generic_credential("gemini:antigravity");
     }
 
     #[cfg(target_os = "macos")]

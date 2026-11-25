@@ -49,3 +49,7 @@ graphify-out/
 # Server runtime state
 server/state.json
 server/server.toml
+
+# Python cache
+__pycache__/
+*.pyc

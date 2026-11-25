@@ -4,7 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { 
   Shield, Zap, RefreshCw, LogIn, Key, 
   Server, CheckCircle, XCircle, Cpu, Globe, Settings,
-  Wifi, WifiOff, LogOut, Square, ChevronDown, Terminal
+  Wifi, WifiOff, LogOut, Square, ChevronDown, Terminal,
+  Code, AlertTriangle, Info
 } from 'lucide-react';
 import pkg from '../package.json';
 
@@ -59,6 +60,11 @@ interface ModelInfo {
   id: string;
   object?: string;
   owned_by?: string;
+  display_name?: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  supports_images?: boolean;
+  supports_tools?: boolean;
 }
 
 interface ModelsResponse {
@@ -130,7 +136,48 @@ const dict = {
     launchCli: "Launch CLI",
     launchAll: "Launch All",
     proxyActive: "Proxy Active (:8047)",
-    stopProxy: "Stop Proxy"
+    stopProxy: "Stop Proxy",
+    apiHelpBtn: "API",
+    apiHelpTitle: "API Access",
+    apiBaseLabel: "OpenAI-compatible base URL:",
+    apiKeyLine: "The API key is the same access token you use to log in here.",
+    apiModelsLine: "Model IDs: GET /v1/models lists the model IDs configured on the gateway — it does not prove that your account or the upstream providers support them. Actual availability depends on your account and upstream.",
+    apiPrereqTitle: "Server prerequisite",
+    apiPrereqText: "Upgrade the gateway and set AG_OPENAI_ENABLED=true on the server. Without the adapter, Chat Completions requests are not translated.",
+    apiNoteTitle: "Note",
+    apiNoteText: "The adapter supports text, streaming responses and function tools. Compatibility with a real upstream account and model has not yet been verified.",
+    apiSecurityTitle: "Security",
+    apiSecurityText: "Sending requests over remote HTTP exposes your API key and data to interception. Use HTTPS for remote connections.",
+    apiCopilotTitle: "VS Code Copilot (BYOK)",
+    apiCopilotUnsupported: "BYOK covers Chat and agent mode; inline completions are not supported.",
+    apiVscodeSteps: [
+      "Open Command Palette (Ctrl+Shift+P) and run \"Chat: Manage Language Models\".",
+      "Choose \"Add Models\", then \"Custom Endpoint\" and \"Chat Completions\". Enter the gateway key when prompted.",
+      "In the generated chatLanguageModels.json, set the model URL to: {endpoint}",
+      "Use a model ID returned by GET /v1/models.",
+      "Set \"toolCalling\": true and \"vision\": false. Adjust the token limits for the selected model.",
+      "Select the model in Chat. Keep the key in VS Code's secret input, not in the file.",
+    ],
+    apiConfigTitle: "Example chatLanguageModels.json",
+    apiExampleHint: "Set the local AG_CLIENT_KEY environment variable to your gateway key and replace MODEL_ID before running.",
+    apiExampleTitle: "Example request",
+    apiClose: "Close",
+    apiCopy: "Copy",
+    apiCopied: "Copied",
+    apiCopyError: "Copy failed. Select and copy the text manually.",
+    modelDetailsHint: "Click for details",
+    modelDetailsNote: "This is the advertised model list from the server (GET /v1/models). It does not confirm that the model is actually available for your account.",
+    mdModelId: "Model ID",
+    mdDisplayName: "Display name",
+    mdOwnedBy: "Provider",
+    mdContextWindow: "Context window",
+    mdMaxOutput: "Max output tokens",
+    mdImageInput: "Image input",
+    mdToolSupport: "Tool calling",
+    mdUnknown: "Unknown",
+    mdNotProvided: "Not provided by server",
+    mdYes: "Supported",
+    mdNo: "Not supported"
   },
   ru: {
     secureClient: "Безопасный прокси-клиент",
@@ -190,7 +237,48 @@ const dict = {
     launchCli: "Запустить CLI",
     launchAll: "Запустить все",
     proxyActive: "Шлюз активен (:8047)",
-    stopProxy: "Остановить шлюз"
+    stopProxy: "Остановить шлюз",
+    apiHelpBtn: "API",
+    apiHelpTitle: "Доступ через API",
+    apiBaseLabel: "OpenAI-совместимый базовый URL:",
+    apiKeyLine: "API-ключ — это тот же токен доступа, которым вы входите здесь.",
+    apiModelsLine: "ID моделей: GET /v1/models возвращает ID моделей, настроенных на шлюзе, но не подтверждает, что ваш аккаунт или провайдеры их поддерживают. Фактическая доступность зависит от аккаунта и провайдера.",
+    apiPrereqTitle: "Требование к серверу",
+    apiPrereqText: "Обновите шлюз и установите на сервере AG_OPENAI_ENABLED=true. Без адаптера запросы Chat Completions не преобразуются.",
+    apiNoteTitle: "Примечание",
+    apiNoteText: "Адаптер поддерживает текст, потоковые ответы и вызовы функций. Совместимость с реальным аккаунтом и моделью ещё не проверена.",
+    apiSecurityTitle: "Безопасность",
+    apiSecurityText: "Запросы по удалённому HTTP раскрывают API-ключ и данные. Для удалённого подключения используйте HTTPS.",
+    apiCopilotTitle: "VS Code Copilot (BYOK)",
+    apiCopilotUnsupported: "BYOK работает в Chat и агентном режиме; автодополнение в строке кода не поддерживается.",
+    apiVscodeSteps: [
+      "Откройте палитру команд (Ctrl+Shift+P) и выполните \"Chat: Manage Language Models\".",
+      "Выберите \"Add Models\", затем \"Custom Endpoint\" и \"Chat Completions\". При запросе введите ключ шлюза.",
+      "В открывшемся chatLanguageModels.json укажите URL модели: {endpoint}",
+      "Используйте ID модели из ответа GET /v1/models.",
+      "Установите \"toolCalling\": true и \"vision\": false. Укажите лимиты токенов выбранной модели.",
+      "Выберите модель в чате. Храните ключ в секрете VS Code, а не в файле.",
+    ],
+    apiConfigTitle: "Пример chatLanguageModels.json",
+    apiExampleHint: "Перед запуском задайте локальную переменную окружения AG_CLIENT_KEY с ключом шлюза и замените MODEL_ID.",
+    apiExampleTitle: "Пример запроса",
+    apiClose: "Закрыть",
+    apiCopy: "Копировать",
+    apiCopied: "Скопировано",
+    apiCopyError: "Не удалось скопировать. Выделите текст и скопируйте его вручную.",
+    modelDetailsHint: "Нажмите, чтобы посмотреть сведения",
+    modelDetailsNote: "Это рекламируемый список моделей сервера (GET /v1/models). Он не подтверждает, что модель фактически доступна вашему аккаунту.",
+    mdModelId: "ID модели",
+    mdDisplayName: "Отображаемое имя",
+    mdOwnedBy: "Провайдер",
+    mdContextWindow: "Контекстное окно",
+    mdMaxOutput: "Максимум токенов вывода",
+    mdImageInput: "Входные изображения",
+    mdToolSupport: "Вызов инструментов",
+    mdUnknown: "Неизвестно",
+    mdNotProvided: "Не предоставлено сервером",
+    mdYes: "Поддерживается",
+    mdNo: "Не поддерживается"
   }
 };
 
@@ -277,6 +365,27 @@ function formatModelName(id: string): string {
     .replace(/\b\w/g, c => c.toUpperCase());
 }
 
+// Renders optional server-advertised token counts. Never derived from the model ID.
+function formatTokenCount(value: unknown, t: { mdUnknown: string; mdNotProvided: string }) {
+  if (value === undefined || value === null) {
+    return <span className="text-xs text-gray-500 italic">{t.mdNotProvided}</span>;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return <span className="text-xs text-gray-500 italic">{t.mdUnknown}</span>;
+  }
+  return <span className="text-xs text-gray-200 font-mono">{value.toLocaleString()}</span>;
+}
+
+// Renders optional server-advertised capability flags (true/false), unknown if absent.
+function formatSupportLabel(value: unknown, t: { mdYes: string; mdNo: string; mdUnknown: string; mdNotProvided: string }) {
+  if (value === true) return <span className="text-xs text-emerald-300">{t.mdYes}</span>;
+  if (value === false) return <span className="text-xs text-rose-300">{t.mdNo}</span>;
+  if (value === undefined || value === null) {
+    return <span className="text-xs text-gray-500 italic">{t.mdNotProvided}</span>;
+  }
+  return <span className="text-xs text-gray-500 italic">{t.mdUnknown}</span>;
+}
+
 function CountdownTimer({ resetTime }: { resetTime: string }) {
   const [timeLeft, setTimeLeft] = useState<string>('');
 
@@ -348,6 +457,12 @@ export default function App() {
   
   // Settings State
   const [showSettings, setShowSettings] = useState(false);
+  const [showApiHelp, setShowApiHelp] = useState(false);
+  const [apiCopiedSection, setApiCopiedSection] = useState<'config' | 'request' | null>(null);
+  const [apiCopyError, setApiCopyError] = useState(false);
+  const apiDialogRef = useRef<HTMLDivElement>(null);
+  const [detailsModel, setDetailsModel] = useState<ModelInfo | null>(null);
+  const detailsDialogRef = useRef<HTMLDivElement>(null);
   const [ideType, setIdeType] = useState('Antigravity IDE');
   const [customExePathIde, setCustomExePathIde] = useState('');
   const [customDbPathIde, setCustomDbPathIde] = useState('');
@@ -643,7 +758,10 @@ export default function App() {
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    validateToken(token, serverUrl);
+    const trimmed = serverUrl.replace(/\/+$/, '');
+    setServerUrl(trimmed);
+    localStorage.setItem(LS_SERVER_KEY, trimmed);
+    validateToken(token, trimmed);
   };
 
   const handleLogout = () => {
@@ -775,18 +893,130 @@ export default function App() {
   }, [serverUrl, checkServerHealth]);
 
   const handleSaveServerUrl = () => {
-    localStorage.setItem(LS_SERVER_KEY, serverUrl);
+    const trimmed = serverUrl.replace(/\/+$/, '');
+    setServerUrl(trimmed);
+    localStorage.setItem(LS_SERVER_KEY, trimmed);
     localStorage.setItem(LS_IDE_TYPE_KEY, ideType);
     localStorage.setItem(LS_CUSTOM_EXE_IDE_KEY, customExePathIde);
     localStorage.setItem(LS_CUSTOM_DB_IDE_KEY, customDbPathIde);
     localStorage.setItem(LS_CUSTOM_EXE_V2_KEY, customExePathV2);
     localStorage.setItem(LS_CUSTOM_DB_V2_KEY, customDbPathV2);
     setShowSettings(false);
-    checkServerHealth(serverUrl);
+    checkServerHealth(trimmed);
     if (token && connected) {
-      validateToken(token, serverUrl);
+      validateToken(token, trimmed);
     }
   };
+
+  // ─── API Help (OpenAI-compatible gateway) ───────────────────────
+  const apiBaseUrl = `${serverUrl.replace(/\/+$/, '')}/v1`;
+  const apiChatEndpoint = `${apiBaseUrl}/chat/completions`;
+  const apiModelsEndpoint = `${apiBaseUrl}/models`;
+  const apiConfigExample = JSON.stringify([{
+    name: 'Antigravity',
+    vendor: 'customendpoint',
+    apiKey: '${input:antigravityApiKey}',
+    apiType: 'chat-completions',
+    models: [{
+      id: 'MODEL_ID',
+      name: 'Antigravity model',
+      url: apiChatEndpoint,
+      toolCalling: true,
+      vision: false,
+      maxInputTokens: 32768,
+      maxOutputTokens: 8192,
+    }],
+  }], null, 2);
+  const apiExampleRequest = getOS() === 'windows'
+    ? [
+      '$headers = @{ Authorization = "Bearer $env:AG_CLIENT_KEY" }',
+      `Invoke-RestMethod -Uri '${apiModelsEndpoint.replace(/'/g, "''")}' -Headers $headers`,
+      '$body = @{ model = "MODEL_ID"; messages = @(@{ role = "user"; content = "Hello" }) } | ConvertTo-Json -Depth 5',
+      `Invoke-RestMethod -Uri '${apiChatEndpoint.replace(/'/g, "''")}' -Method Post -Headers $headers -ContentType 'application/json' -Body $body`,
+    ].join('\n')
+    : [
+      `curl --fail-with-body '${apiModelsEndpoint.replace(/'/g, "'\\''")}' -H "Authorization: Bearer $AG_CLIENT_KEY"`,
+      `curl --fail-with-body '${apiChatEndpoint.replace(/'/g, "'\\''")}' \\`,
+      '  -H "Authorization: Bearer $AG_CLIENT_KEY" \\',
+      '  -H "Content-Type: application/json" \\',
+      '  -d \'{"model":"MODEL_ID","messages":[{"role":"user","content":"Hello"}]}\'',
+    ].join('\n');
+
+  const copyApiText = async (section: 'config' | 'request') => {
+    setApiCopyError(false);
+    try {
+      await navigator.clipboard.writeText(section === 'config' ? apiConfigExample : apiExampleRequest);
+      setApiCopiedSection(section);
+    } catch (e) {
+      console.error('Failed to copy API instructions', e);
+      setApiCopiedSection(null);
+      setApiCopyError(true);
+    }
+  };
+
+  useEffect(() => {
+    if (!apiCopiedSection) return;
+    const timer = window.setTimeout(() => setApiCopiedSection(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [apiCopiedSection]);
+
+  useEffect(() => {
+    if (!showApiHelp) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = apiDialogRef.current;
+    const buttons = () => Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || []);
+    buttons()[0]?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowApiHelp(false);
+      if (e.key !== 'Tab') return;
+      const focusable = buttons();
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        e.preventDefault();
+      } else if (e.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      previousFocus?.focus();
+    };
+  }, [showApiHelp]);
+
+  useEffect(() => {
+    if (!detailsModel) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = detailsDialogRef.current;
+    const buttons = () => Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || []);
+    buttons()[0]?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDetailsModel(null);
+      if (e.key !== 'Tab') return;
+      const focusable = buttons();
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        e.preventDefault();
+      } else if (e.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      previousFocus?.focus();
+    };
+  }, [detailsModel]);
 
   // @ts-ignore - function unused in new UI but kept for API completeness
   const toggleCreditOverages = async () => {
@@ -882,6 +1112,31 @@ export default function App() {
               </div>
             </div>
 
+            {/* Server URL Input */}
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-2">
+                {t.serverUrl}
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                  <Server className="h-5 w-5 text-gray-500" />
+                </div>
+                <input
+                  type="text"
+                  value={serverUrl}
+                  onChange={(e) => setServerUrl(e.target.value)}
+                  onBlur={() => {
+                    const trimmed = serverUrl.replace(/\/+$/, '');
+                    setServerUrl(trimmed);
+                    localStorage.setItem(LS_SERVER_KEY, trimmed);
+                  }}
+                  className="block w-full pl-11 pr-4 py-3 bg-black/40 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all outline-none text-sm"
+                  placeholder={lang === "ru" ? "http://сервер:8045" : "http://server:8045"}
+                  required
+                />
+              </div>
+            </div>
+
             {/* Token Input */}
             <div>
               <label className="block text-sm font-medium text-gray-400 mb-2">
@@ -912,7 +1167,7 @@ export default function App() {
             {/* Submit */}
             <button
               type="submit"
-              disabled={loading || !token}
+              disabled={loading || !token || !serverUrl}
               className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white rounded-xl font-medium shadow-lg shadow-purple-500/25 transition-all flex items-center justify-center group disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
@@ -1059,7 +1314,7 @@ export default function App() {
               <input
                 type="text"
                 value={serverUrl}
-                onChange={(e) => setServerUrl(e.target.value.replace(/\/+$/, ''))}
+                onChange={(e) => setServerUrl(e.target.value)}
                 className="flex-1 px-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:ring-2 focus:ring-blue-500/50 outline-none"
                 placeholder={lang === "ru" ? "http://сервер:8045" : "http://server:8045"}
               />
@@ -1191,7 +1446,7 @@ export default function App() {
         {/* ─── Connect to IDE (Premium Banner) ──────────────────────────────────── */}
         <div className="relative mb-6 group">
           <div className="absolute inset-0 bg-gradient-to-r from-blue-600/20 via-purple-600/20 to-emerald-600/20 blur-xl rounded-2xl opacity-50 group-hover:opacity-100 transition-opacity duration-500" />
-          <div className="relative backdrop-blur-xl bg-black/40 border border-white/10 rounded-2xl p-4 sm:p-5 flex flex-row items-center justify-between shadow-2xl gap-4">
+          <div className="relative backdrop-blur-xl bg-black/40 border border-white/10 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between shadow-2xl gap-4">
             
             {/* Left: Icon & Text */}
             <div className="flex items-center space-x-3.5 min-w-0">
@@ -1215,8 +1470,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right: Simultaneous Multi-Tool Controls in ONE Single Row */}
-            <div className="flex items-center gap-2 shrink-0 flex-nowrap justify-end">
+            {/* Right: Multi-Tool Controls */}
+            <div className="flex items-center gap-2 sm:shrink-0 flex-wrap justify-start sm:justify-end max-w-full">
               {/* Launch Antigravity IDE */}
               <button
                 onClick={() => handleLaunchTool('Antigravity IDE')}
@@ -1278,6 +1533,20 @@ export default function App() {
                   <Terminal className="w-3.5 h-3.5 text-emerald-400" />
                 )}
                 <span>CLI</span>
+              </button>
+
+              {/* API Connection Help */}
+              <button
+                onClick={() => {
+                  setApiCopyError(false);
+                  setApiCopiedSection(null);
+                  setShowApiHelp(true);
+                }}
+                className="px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center space-x-1.5 border shadow-sm bg-sky-500/10 hover:bg-sky-500/25 border-sky-500/30 hover:border-sky-500/50 text-sky-300 hover:text-white"
+                title={t.apiHelpTitle}
+              >
+                <Code className="w-3.5 h-3.5 text-sky-400" />
+                <span>{t.apiHelpBtn}</span>
               </button>
 
               {/* Stop Proxy Button */}
@@ -1348,9 +1617,12 @@ export default function App() {
                     return match ? modelResets[match] : undefined;
                   })();
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={model.id}
-                    className="flex flex-col space-y-2 px-4 py-3 bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 rounded-xl transition-colors group/model"
+                    onClick={() => setDetailsModel(model)}
+                    aria-label={`${formatModelName(model.id)} — ${t.modelDetailsHint}`}
+                    className="flex flex-col space-y-2 px-4 py-3 text-left bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 rounded-xl transition-colors group/model focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-3">
@@ -1366,6 +1638,7 @@ export default function App() {
                         {pct !== undefined && (
                           <span className="text-[10px] text-gray-500 font-mono">{pct}%</span>
                         )}
+                        <Info className="w-3.5 h-3.5 text-gray-600 group-hover/model:text-gray-400 transition-colors shrink-0" aria-hidden="true" />
                       </div>
                     </div>
                     {pct !== undefined && (
@@ -1373,7 +1646,7 @@ export default function App() {
                         <div className={`h-1 rounded-full bg-gradient-to-r ${catInfo.color}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}></div>
                       </div>
                     )}
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -1618,6 +1891,205 @@ export default function App() {
                 className="px-6 py-2.5 bg-white text-black font-semibold rounded-xl hover:bg-gray-200 transition-colors"
               >
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── API Help Modal ──────────────────────────────────── */}
+      {showApiHelp && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowApiHelp(false)}
+        >
+          <div
+            ref={apiDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="api-help-title"
+            className="bg-[#1a1c23] border border-white/10 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[85vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 sm:p-6 border-b border-white/10 shrink-0">
+              <h2 id="api-help-title" className="text-lg sm:text-xl font-bold text-white flex items-center space-x-2 min-w-0">
+                <Code className="w-5 h-5 text-sky-400 shrink-0" />
+                <span className="truncate">{t.apiHelpTitle}</span>
+              </h2>
+              <button
+                onClick={() => setShowApiHelp(false)}
+                aria-label={t.apiClose}
+                className="text-gray-400 hover:text-white transition-colors shrink-0 ml-2"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-6 space-y-5 overflow-y-auto">
+              {/* Prerequisite */}
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-start space-x-3">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="text-sm font-bold text-amber-300 mb-1">{t.apiPrereqTitle}</h3>
+                  <p className="text-xs text-gray-300 leading-relaxed">{t.apiPrereqText}</p>
+                </div>
+              </div>
+
+              {/* Base URL */}
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-gray-300 block">{t.apiBaseLabel}</label>
+                <code className="block text-xs font-mono text-gray-400 bg-black/40 border border-white/10 rounded-lg px-3 py-2 break-all">
+                  {apiBaseUrl}
+                </code>
+              </div>
+
+              {/* Key + models */}
+              <ul className="space-y-2">
+                <li className="text-xs text-gray-300 leading-relaxed flex items-start space-x-2">
+                  <Key className="w-3.5 h-3.5 text-sky-400 shrink-0 mt-0.5" />
+                  <span>{t.apiKeyLine}</span>
+                </li>
+                <li className="text-xs text-gray-300 leading-relaxed flex items-start space-x-2">
+                  <Server className="w-3.5 h-3.5 text-sky-400 shrink-0 mt-0.5" />
+                  <span>{t.apiModelsLine}</span>
+                </li>
+              </ul>
+
+              {/* Streaming / tools note */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                <h3 className="text-sm font-bold text-blue-400 mb-1">{t.apiNoteTitle}</h3>
+                <p className="text-xs text-gray-300 leading-relaxed">{t.apiNoteText}</p>
+              </div>
+
+              {/* Security warning */}
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 flex items-start space-x-3">
+                <Shield className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="text-sm font-bold text-rose-300 mb-1">{t.apiSecurityTitle}</h3>
+                  <p className="text-xs text-gray-300 leading-relaxed">{t.apiSecurityText}</p>
+                </div>
+              </div>
+
+              {/* VS Code Copilot BYOK */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2">
+                <h3 className="text-sm font-bold text-purple-400">{t.apiCopilotTitle}</h3>
+                <ol className="list-decimal list-inside space-y-1.5">
+                  {t.apiVscodeSteps.map((step: string, i: number) => (
+                    <li key={i} className="text-xs text-gray-300 leading-relaxed break-words">
+                      {step.includes('{endpoint}') ? (
+                        <>
+                          {step.split('{endpoint}')[0]}
+                          <code className="font-mono text-gray-400 bg-black/40 border border-white/10 rounded px-1 py-0.5 break-all">{apiChatEndpoint}</code>
+                          {step.split('{endpoint}')[1]}
+                        </>
+                      ) : step}
+                    </li>
+                  ))}
+                </ol>
+                <p className="text-[11px] text-gray-400 italic">{t.apiCopilotUnsupported}</p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-gray-300">{t.apiConfigTitle}</h3>
+                  <button
+                    onClick={() => copyApiText('config')}
+                    aria-label={`${t.apiCopy}: ${t.apiConfigTitle}`}
+                    className="text-[11px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-gray-400 hover:text-white transition-colors"
+                  >
+                    {apiCopiedSection === 'config' ? t.apiCopied : t.apiCopy}
+                  </button>
+                </div>
+                <pre className="text-[11px] font-mono text-gray-400 bg-black/40 border border-white/10 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre">{apiConfigExample}</pre>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-gray-300">{t.apiExampleTitle}</h3>
+                  <button
+                    onClick={() => copyApiText('request')}
+                    aria-label={`${t.apiCopy}: ${t.apiExampleTitle}`}
+                    className="text-[11px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-gray-400 hover:text-white transition-colors"
+                  >
+                    {apiCopiedSection === 'request' ? t.apiCopied : t.apiCopy}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400">{t.apiExampleHint}</p>
+                <pre className="text-[11px] font-mono text-gray-400 bg-black/40 border border-white/10 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre">{apiExampleRequest}</pre>
+              </div>
+              {apiCopyError && <p role="alert" className="text-xs text-rose-300">{t.apiCopyError}</p>}
+            </div>
+
+            <div className="p-4 sm:p-6 border-t border-white/10 flex justify-end shrink-0">
+              <button
+                onClick={() => setShowApiHelp(false)}
+                className="px-6 py-2.5 bg-white text-black font-semibold rounded-xl hover:bg-gray-200 transition-colors"
+              >
+                {t.apiClose}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Model Details Modal ───────────────────────── */}
+      {detailsModel && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => setDetailsModel(null)}
+        >
+          <div
+            ref={detailsDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="model-details-title"
+            className="bg-[#1a1c23] border border-white/10 rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[85vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 sm:p-6 border-b border-white/10 shrink-0">
+              <h2 id="model-details-title" className="text-lg sm:text-xl font-bold text-white flex items-center space-x-2 min-w-0">
+                <Cpu className="w-5 h-5 text-blue-400 shrink-0" />
+                <span className="truncate">{detailsModel.display_name || formatModelName(detailsModel.id)}</span>
+              </h2>
+              <button
+                onClick={() => setDetailsModel(null)}
+                aria-label={t.apiClose}
+                className="text-gray-400 hover:text-white transition-colors shrink-0 ml-2"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-6 space-y-4 overflow-y-auto">
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-start space-x-3">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <p className="text-xs text-gray-300 leading-relaxed">{t.modelDetailsNote}</p>
+              </div>
+
+              <dl className="space-y-2">
+                {[
+                  { label: t.mdModelId, value: <code className="text-xs font-mono text-gray-400 bg-black/40 border border-white/10 rounded px-1.5 py-0.5 break-all">{detailsModel.id}</code> },
+                  { label: t.mdDisplayName, value: <span className="text-xs text-gray-200">{detailsModel.display_name || formatModelName(detailsModel.id)}</span> },
+                  { label: t.mdOwnedBy, value: detailsModel.owned_by ? <span className="text-xs text-gray-200">{detailsModel.owned_by}</span> : <span className="text-xs text-gray-500 italic">{t.mdNotProvided}</span> },
+                  { label: t.mdContextWindow, value: formatTokenCount(detailsModel.context_window, t) },
+                  { label: t.mdMaxOutput, value: formatTokenCount(detailsModel.max_output_tokens, t) },
+                  { label: t.mdImageInput, value: formatSupportLabel(detailsModel.supports_images, t) },
+                  { label: t.mdToolSupport, value: formatSupportLabel(detailsModel.supports_tools, t) },
+                ].map(row => (
+                  <div key={row.label} className="flex items-start justify-between gap-3 px-3 py-2 bg-white/[0.03] border border-white/5 rounded-xl">
+                    <dt className="text-xs text-gray-400 shrink-0">{row.label}</dt>
+                    <dd className="text-right min-w-0">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+
+            <div className="p-4 sm:p-6 border-t border-white/10 flex justify-end shrink-0">
+              <button
+                onClick={() => setDetailsModel(null)}
+                className="px-6 py-2.5 bg-white text-black font-semibold rounded-xl hover:bg-gray-200 transition-colors"
+              >
+                {t.apiClose}
               </button>
             </div>
           </div>

@@ -1,147 +1,65 @@
-# 🌌 Google Antigravity в России: Скачать клиент для IDE, 2.0 и CLI (Запуск БЕЗ VPN на Windows, macOS, Linux)
+# 🌌 AntigravityUnlocker (Client v1.0.78 + Self-Hosted Server)
 
-[![GitHub releases](https://img.shields.io/github/v/release/loysger/Antigravity?style=flat-square&label=Версия)](https://github.com/loysger/Antigravity/releases)
-[![Downloads](https://img.shields.io/github/downloads/loysger/Antigravity/total?style=flat-square&label=Скачиваний)](https://github.com/loysger/Antigravity/releases)
-[![Platforms](https://img.shields.io/badge/Платформы-Windows%20|%20macOS%20|%20Linux-blue?style=flat-square)](https://github.com/loysger/Antigravity/releases)
-[![Telegram](https://img.shields.io/badge/Telegram-Поддержка-blue?style=flat-square&logo=telegram)](https://t.me/Ultimateadvansed)
+[![GitHub releases](https://img.shields.io/github/v/release/VlDubr/AntigravityUnlocker?style=flat-square&label=Версия)](https://github.com/VlDubr/AntigravityUnlocker/releases)
+[![Platforms](https://img.shields.io/badge/Платформы-Windows%20|%20Linux%20Server-blue?style=flat-square)](https://github.com/VlDubr/AntigravityUnlocker/releases)
 
-**Google Antigravity** — передовая среда разработки и автономный ИИ-агент нового поколения от Google. Платформа объединяет возможности **Antigravity IDE**, оркестратора **Antigravity 2.0** и консольного терминального агента **Antigravity CLI (agy)**, используя флагманские модели **Claude Sonnet 5.5**, **Claude Opus 5.5**, **Claude Sonnet 4.6**, **Gemini 3.8 Flash High** и **Gemini 3.1 Pro** для автономного написания, анализа и рефакторинга кода.
-
-Из-за региональных ограничений прямое обращение к Google API из России и стран СНГ блокируется (возникают ошибки `400 Bad Request: User location is not supported`, `Your current account is not eligible for Antigravity, because it is not currently available in your location` или сбои выполнения агента `agent terminated due to error`).
-
-**Antigravity Client** — специализированный кроссплатформенный шлюз, который подключает IDE напрямую к стабильному пулу мощностей: **без личного Google-аккаунта, без риска слёта подписок и без общего VPN на компьютере**.
+**AntigravityUnlocker** — клиент (**Antigravity Client**) и собственный self-hosted шлюз (`server/`) для работы с **Antigravity IDE**, **Antigravity 2.0**, **Antigravity CLI (agy)** и OpenAI-совместимыми инструментами (включая **VS Code / GitHub Copilot BYOK**) через ваш личный VPS без общего VPN на компьютере.
 
 ---
 
-## 🌟 Ключевые возможности (Features)
+## 🆕 Что нового в v1.0.78
 
-* **🚀 Прямой доступ без личного Google-аккаунта:** Больше не нужно регистрировать иностранные почты, искать зарубежные карты и бояться внезапного бана или слёта платной подписки.
-* **⚡ Работа без сторонних VPN:** Клиент работает как локальный точечный шлюз (`127.0.0.1:8047`) только для трафика IDE. Ваш браузер, Telegram, стриминг и игры летают на полной скорости домашнего интернета.
-* **🔄 Одновременный запуск IDE, 2.0 и CLI:** Возможность параллельно запускать и работать в Antigravity IDE, Antigravity 2.0 и терминальном CLI через единый общий шлюз без конфликтов портов.
-* **🛠 Решение критических ошибок агента:** Устраняет ошибки `agent terminated due to error` и `agent execution terminated` за счет активного удержания WebSocket-сессий без сброса контекста.
-* **🧠 Полный спектр флагманских моделей:** Доступ к Claude 4.6 (Sonnet / Opus) и Gemini 3.1 Pro с рекордным контекстом до **2 000 000 токенов**.
-* **💻 Кроссплатформенность:** Официальные сборки для **Windows (exe/msi)**, **macOS (dmg для Apple Silicon & Intel)** и **Linux (AppImage/deb/rpm/WSL)**.
-* **🧩 Поддержка MCP (Model Context Protocol):** Интеграция сторонних инструментов, баз данных и внешних навыков.
-
----
-
-## ⚡ Технология Prompt Caching (Умное кэширование контекста)
-
-В **Antigravity Client** реализована профессиональная технология **Prompt Caching**:
-1. **Экономия лимитов в 3–5 раз:** При повторных запросах в рамках одного диалога закэшированная кодовая база считывается из быстрой памяти без расхода квоты.
-2. **Увеличенный ресурс тарифа:** За счёт кэширования базовый тариф живет в несколько раз дольше обычного официального тарифа Google.
-3. **Ускорение генерации:** Ответы на вопросы по структуре проекта формируются на **40–60% быстрее**.
+- **Собственный сервер-шлюз (`server/`):** лёгкий Rust-сервер под Linux x86_64 (`musl`), запуск через `systemd`, поддержка HTTPS через Caddy (`flush_interval -1`) и WebSocket reverse-tunnel (`routing_mode`). Подробная инструкция по развёртыванию: [server/README.md](server/README.md).
+- **OpenAI Chat Completions API (`/v1/chat/completions`):** opt-in адаптер (`AG_OPENAI_ENABLED=true`) с поддержкой стриминга (SSE) и function calling (`tool_calls` + сохранение `thoughtSignature`).
+- **Интеграция с Copilot в интерфейсе клиента:** рядом с кнопками `IDE`, `V2.0` и `CLI` добавлена кнопка **API** с пошаговой инструкцией подключения к VS Code / GitHub Copilot.
+- **Карточка характеристик модели:** клик по модели в списке открывает модальное окно с её ID, именем, лимитами контекста/вывода и поддержкой возможностей (изображения, tools), если эти данные предоставлены сервером.
+- **Исправления Antigravity 2.0 и авторизации:**
+  - Исключён loopback из прокси (`--proxy-bypass-list=localhost;127.0.0.1;[::1]`) — исправлен чёрный экран (`ERR_EMPTY_RESPONSE`) при запуске Antigravity 2.0.
+  - Исправлена запись/чтение учётных данных Windows Credential Manager через нативный Win32 API (`CredWriteW` / `CredDeleteW` / `CredReadW`).
+  - Скрипт `server/tools/extract-creds.py` по умолчанию выводит только рекомендуемую consumer-пару `client_id` / `client_secret` для Antigravity 2.0 (`--all-clients` для полной диагностики).
+  - Discovery `loadCodeAssist` переведено на Antigravity Hub User-Agent и `ideType=ANTIGRAVITY`, благодаря чему личные аккаунты используют управляемый проект (`aicode-consumers`) без ручного `AG_GOOGLE_PROJECT_ID`.
 
 ---
 
-## 📥 Скачать Antigravity Client (v1.0.77)
+## 🌟 Ключевые возможности
 
-### 🖥️ Antigravity Desktop (GUI Приложение)
-Выберите готовый установщик для вашей операционной системы:
-
-| Операционная система | Тип пакета | Ссылка на скачивание |
-|---|---|:---:|
-| 🪟 **Windows (10/11 x64)** | Setup EXE (быстрая установка) | [**Скачать .exe**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/Antigravity.Client_1.0.77_x64-setup.exe) |
-| 🪟 **Windows (10/11 x64)** | MSI Installer (системный пакет) | [**Скачать .msi**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/Antigravity.Client_1.0.77_x64_en-US.msi) |
-| 🍎 **macOS (Apple Silicon M1/M2/M3/M4)** | DMG образ | [**Скачать .dmg (ARM64)**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/Antigravity.Client_1.0.77_aarch64.dmg) |
-| 🍏 **macOS (Intel x86_64)** | DMG образ | [**Скачать .dmg (Intel)**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/Antigravity.Client_1.0.77_x64.dmg) |
-| 🐧 **Linux (Ubuntu / Debian x64)** | DEB пакет | [**Скачать .deb**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/Antigravity.Client_1.0.77_amd64.deb) |
-| 🐧 **Linux (любые дистрибутивы)** | Портативный AppImage | [**Скачать .AppImage**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/Antigravity.Client_1.0.77_amd64.AppImage) |
-| 🐧 **Linux (Fedora / RHEL / CentOS)** | RPM пакет | [**Скачать .rpm**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/Antigravity.Client-1.0.77-1.x86_64.rpm) |
-
-### ⚡ Antigravity CLI (Терминальный агент для SSH, серверов и Docker)
-Сверхлегкий headless-бинарник (~8.5 МБ) для работы в терминале:
-
-| Платформа | Архитектура | Бинарник |
-|---|---|:---:|
-| 🪟 **Windows** | x86_64 | [**antigravity-windows-x64.exe**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/antigravity-windows-x64.exe) |
-| 🍎 **macOS** | Apple Silicon (ARM64) | [**antigravity-macos-arm64**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/antigravity-macos-arm64) |
-| 🍏 **macOS** | Intel (x86_64) | [**antigravity-macos-x64**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/antigravity-macos-x64) |
-| 🐧 **Linux / WSL** | x86_64 | [**antigravity-linux-x64**](https://github.com/loysger/Antigravity/releases/download/v1.0.77/antigravity-linux-x64) |
-
-#### Быстрая установка CLI одной командой:
-- **Linux / macOS / WSL:**
-  ```bash
-  curl -fsSL https://antigravity-cli.ru/install.sh | bash
-  ```
-- **Windows (PowerShell):**
-  ```powershell
-  irm https://antigravity-cli.ru/install.ps1 | iex
-  ```
-
-📦 Все сборки доступны на [**Странице релизов (Releases)**](https://github.com/loysger/Antigravity/releases).
+* **⚡ Работа без общего VPN:** Клиент поднимает локальный точечный прокси (`127.0.0.1:8047`) только для трафика IDE и CLI. Остальная система работает напрямую.
+* **🛡️ Полный контроль на своём VPS:** Вы сами разворачиваете `antigravity-server` на своём сервере, храните токены локально и ограничиваете доступ своим `AG_CLIENT_KEY`.
+* **🔌 OpenAI-совместимый шлюз:** Используйте модели из Antigravity в VS Code (Manage Language Models → Custom Endpoint) и других совместимых клиентах.
+* **🔄 Одновременный запуск IDE, 2.0 и CLI:** Общий локальный шлюз без конфликтов портов.
 
 ---
 
-## 📺 Видео-инструкция по установке и настройке (YouTube)
+## 📥 Скачать релиз (v1.0.78)
 
-Для быстрого и наглядного знакомства с установкой и настройкой смотрите подробную видео-инструкцию:
+### 🖥️ Antigravity Client (Windows)
 
-[![Видео инструкция: запуск и настройка Google Antigravity в России](https://img.youtube.com/vi/QIPjh0FaLAY/maxresdefault.jpg)](https://www.youtube.com/watch?v=QIPjh0FaLAY)
+| Компонент | Формат | Ссылка на скачивание |
+|---|---|---|
+| 🪟 **Windows (10/11 x64)** | Setup EXE (установщик NSIS) | [**Antigravity.Client_1.0.78_x64-setup.exe**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.78/Antigravity.Client_1.0.78_x64-setup.exe) |
+| 🪟 **Windows (10/11 x64)** | MSI Installer | [**Antigravity.Client_1.0.78_x64_en-US.msi**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.78/Antigravity.Client_1.0.78_x64_en-US.msi) |
+| 🪟 **Windows (10/11 x64)** | Portable EXE | [**antigravity-client.exe**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.78/antigravity-client.exe) |
 
-> 🎥 **[Смотреть видео-инструкцию на YouTube (кликните для перехода)](https://www.youtube.com/watch?v=QIPjh0FaLAY)**  
-> В видео показан полный пошаговый процесс: скачивание клиента под вашу ОС, ввод ключа доступа, активация и запуск **Antigravity IDE**, **Antigravity 2.0** и **AGY CLI** без VPN на полной скорости, а также разбор решения региональных ограничений.
+### 🐧 Self-Hosted Server (Linux VPS)
 
----
+| Компонент | Архитектура | Ссылка на скачивание |
+|---|---|---|
+| 🐧 **Linux (static musl)** | x86_64 | [**antigravity-server-linux-x86_64**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.78/antigravity-server-linux-x86_64) |
 
-## 🚀 Быстрый старт за 3 шага
-
-> 💡 **Видео-формат**: Если вам удобнее смотреть видео, ознакомьтесь с [**видео-инструкцией выше**](https://www.youtube.com/watch?v=QIPjh0FaLAY).
-
-1. **Скачайте установщик** под вашу ОС и установите приложение.
-2. **Запустите Antigravity Client** и введите персональный ключ доступа (`IMPULS-xxxxx`).
-3. Нажмите кнопку **«Подключиться»** (Connect) и запустите **Antigravity IDE**, **Antigravity 2.0** или консольный агент **AGY CLI**.
-
-> 💡 **Для пользователей macOS**:  
-> Если Gatekeeper выводит предупреждение о неизвестном разработчике при первом запуске, выполните в Терминале:  
-> ```bash
-> xattr -cr "/Applications/Antigravity Client.app"
-> ```
+📦 Все сборки доступны на [**Странице релизов (Releases)**](https://github.com/VlDubr/AntigravityUnlocker/releases).
 
 ---
 
-## 🧠 Поддерживаемые модели искусственного интеллекта
+## 🚀 Быстрый старт
 
-| Модель | Назначение |
-|---|---|
-| **Gemini 4 Neon (Low / Medium / High / Extra)** | Новейшее поколение Gemini 4 Neon с авто-обнаружением новых моделей Google |
-| **Orchestrator (Neon / Argon)** | Мульти-агентный оркестратор для сложных архитектурных задач |
-| **Gemini 4 Hydrogen (Low / Medium / High / Extra)** | Флагманская модель Gemini 4 для глубокого рассуждения и кода |
-| **Gemini 4 Argon (Low / Medium / High)** | Флагманская модель Gemini 4 для сложных инженерных задач |
-| **Claude Opus 5.5 & Thinking** | Архитектура нового поколения, сложнейшие задачи, глубокий анализ |
-| **Claude Sonnet 5.5 & Thinking** | Флагманский автономный агент, сверхвысокая точность и генерация |
-| **Claude Opus 4.6 & Thinking** | Комплексные расчеты, глубокий рефакторинг |
-| **Claude Sonnet 4.6 & Thinking** | Автономное написание и отладка кода |
-| **Gemini 3.1 Pro** | Контекстное окно до **2 000 000 токенов** (весь репозиторий целиком) |
-| **Gemini 3.8 Flash (High / Thinking)** | Сверхбыстрый отклик, автокомплит и мгновенный поиск багов |
-| **GPT-OSS 120B** | Открытая флагманская модель для типовых задач |
+1. **Разверните сервер** на зарубежном VPS (NL/EU/US) по инструкции в [server/README.md](server/README.md) и настройте HTTPS (например, через Caddy).
+2. **Скачайте и запустите Antigravity Client** на Windows.
+3. В настройках укажите **Server URL** (например, `https://<ваш-домен>`) и ваш **Token** (`AG_CLIENT_KEY`).
+4. Нажмите **«Подключиться»** и запускайте **IDE**, **V2.0**, **CLI** или подключите **API** в VS Code Copilot.
 
 ---
 
-## ❓ Часто задаваемые вопросы (FAQ & База знаний)
+## 🤝 Ссылки
 
-### ❓ Что делать, если Google Antigravity не работает в России?
-Прямой доступ к API Google Cloud Code заблокирован для российских IP-адресов. Antigravity Client перенаправляет только запросы IDE через выделенный локальный прокси (`127.0.0.1:8047`), не снижая общую скорость интернета на вашем компьютере.
-
-### ❓ Как исправить ошибку «agent terminated due to error» в Antigravity IDE & 2.0?
-Эта ошибка возникает из-за микроразрывов соединения при использовании обычных VPN или при исчерпании лимитов бесплатного Google-аккаунта. Подробный пошаговый разбор с логами смотрите в [**Issue #1**](https://github.com/loysger/Antigravity/issues/1).
-
-### ❓ Что делать при ошибке «agent execution terminated due to error» в CLI / терминале?
-Длинная сигнатура ошибки со словом `execution` возникает при падении фонового раннера языкового сервера или разрыве стрима `streamGenerateContent`. Подробное решение разобрано в [**Issue #2**](https://github.com/loysger/Antigravity/issues/2).
-
-### ❓ Как решить ошибку «Your current account is not eligible for Antigravity, because it is not currently available in your location»?
-Google проверяет постоянную страну профиля вашего Google-аккаунта (`ineligibleTiers`) и блокирует авторизацию для пользователей из РФ и СНГ даже под VPN. Подробная инструкция по обходу блокировки без смены страны профиля приведена в [**Issue #3**](https://github.com/loysger/Antigravity/issues/3).
-
-### ❓ Как обойти ошибку привязки страны (Google Country Association Form) и платежного профиля?
-Если в настройках аккаунта Google страной указана Россия, сервис блокирует вход даже под качественным VPN. Попытка сменить страну через официальную форму часто отклоняется из-за платежного профиля или истории сессий. Подробное руководство, как запустить Antigravity под своим аккаунтом без риска бана, читайте в [**Issue #4**](https://github.com/loysger/Antigravity/issues/4).
-
-### ❓ Как запустить Google Antigravity в России без VPN на полной скорости интернета?
-Классический системный VPN замедляет соединение и блокирует российские сайты. Antigravity Client перенаправляет только служебный трафик IDE на локальном порту (`127.0.0.1:8047`), сохраняя гигабитную скорость для остальной системы. Пошаговая инструкция приведена в [**Issue #5**](https://github.com/loysger/Antigravity/issues/5).
-
----
-
-## 🤝 Обратная связь и техническая поддержка
-
-* 🤖 **Telegram-бот (получить тестовый ключ, тарифы PRO / X3 / X5 / ULTRA)**: **[@AntigravityVipbot](https://t.me/AntigravityVipbot)**
-* 📩 **Поддержка в Telegram**: **[@Ultimateadvansed](https://t.me/Ultimateadvansed)**
-* 🐛 **Сообщить о проблеме**: [GitHub Issues](https://github.com/loysger/Antigravity/issues)
+* 📖 **Документация сервера и деплоя**: [server/README.md](server/README.md)
+* 🐛 **Сообщить о проблеме**: [GitHub Issues](https://github.com/VlDubr/AntigravityUnlocker/issues)

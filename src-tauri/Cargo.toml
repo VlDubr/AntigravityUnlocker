@@ -1,6 +1,6 @@
 [package]
 name = "antigravity-client"
-version = "1.0.77"
+version = "1.0.78"
 description = "A Tauri App"
 authors = ["Antigravity Team"]
 edition = "2021"
@@ -35,3 +35,6 @@ bytes = "1"
 hickory-resolver = { version = "0.24", features = ["dns-over-https-rustls", "dns-over-rustls", "webpki-roots"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Credentials"] }

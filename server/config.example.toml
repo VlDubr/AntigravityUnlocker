@@ -36,7 +36,7 @@ refresh_skew_secs = 120
 [[google.accounts]]
 id = "main"
 refresh_token = ""
-project_id = ""
+project_id = "" # Optional override; env AG_GOOGLE_PROJECT_ID.
 
 [upstream]
 # Upstream API base (env AG_UPSTREAM_BASE_URL).
@@ -47,8 +47,9 @@ normalize_v1internal_colon = true
 passthrough_unknown_v1 = true
 connect_timeout_secs = 15
 stream_idle_timeout_secs = 300
-# Custom User-Agent for upstream requests. Empty = reqwest default.
-user_agent = ""
+# Antigravity Hub identity required for personal free-tier discovery.
+# Override only to match a newer installed Hub version.
+user_agent = "antigravity/hub/2.35.0 (aidev_client; os_type=windows; arch=amd64)"
 # Extra headers attached to every upstream request.
 # [upstream.extra_headers]
 # X-Example = "value"
@@ -68,6 +69,10 @@ max_workers_per_key = 32
 [models]
 # Model ids to advertise. Empty = built-in default list.
 advertise = []
+
+[openai]
+# Enable the OpenAI Chat Completions adapter. Disabled preserves passthrough.
+enabled = false # env AG_OPENAI_ENABLED=true
 
 [updates]
 # Update manifest (all optional; empty version disables update ads).
