@@ -794,6 +794,14 @@ fn clear_saved_token() -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // tokio-tungstenite's TLS (wss://) needs a process-wide rustls crypto
+    // provider installed before the first handshake, or it panics with
+    // "Could not automatically determine the process-level CryptoProvider".
+    // Without this, every wss:// connect_async() call (CONNECT tunnel,
+    // reverse tunnel) silently kills its task, which looks like the remote
+    // host forcibly closing the connection.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

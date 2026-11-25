@@ -31,6 +31,8 @@ pub struct AppState {
     /// tunneled upstream egress (`routing_mode != "direct"`).
     pub tunnel_proxies: Arc<tokio::sync::Mutex<HashMap<String, Arc<ConnectProxy>>>>,
     pub(crate) openai_projects: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
+    pub(crate) models_cache:
+        Arc<tokio::sync::Mutex<HashMap<String, (std::time::Instant, Vec<serde_json::Value>)>>>,
 }
 
 impl AppState {
@@ -60,6 +62,7 @@ impl AppState {
             tunnel: Arc::new(TunnelRegistry::new(max_workers_per_key)),
             tunnel_proxies: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             openai_projects: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            models_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -89,6 +92,7 @@ pub fn build_router(state: AppState) -> axum::Router {
             get(handlers::update::client_update_download),
         )
         .route("/v1/tunnel", get(tunnel::tunnel_ws))
+        .route("/v1/proxy-connect", get(handlers::proxy_connect::proxy_connect))
         .fallback(handlers::forward::forward)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)

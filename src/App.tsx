@@ -141,7 +141,7 @@ const dict = {
     apiHelpTitle: "API Access",
     apiBaseLabel: "OpenAI-compatible base URL:",
     apiKeyLine: "The API key is the same access token you use to log in here.",
-    apiModelsLine: "Model IDs: GET /v1/models lists the model IDs configured on the gateway — it does not prove that your account or the upstream providers support them. Actual availability depends on your account and upstream.",
+    apiModelsLine: "Model IDs: GET /v1/models fetches the models available to your upstream account (or the gateway override list if configured).",
     apiPrereqTitle: "Server prerequisite",
     apiPrereqText: "Upgrade the gateway and set AG_OPENAI_ENABLED=true on the server. Without the adapter, Chat Completions requests are not translated.",
     apiNoteTitle: "Note",
@@ -166,7 +166,7 @@ const dict = {
     apiCopied: "Copied",
     apiCopyError: "Copy failed. Select and copy the text manually.",
     modelDetailsHint: "Click for details",
-    modelDetailsNote: "This is the advertised model list from the server (GET /v1/models). It does not confirm that the model is actually available for your account.",
+    modelDetailsNote: "Model list returned by GET /v1/models from the gateway (fetched from upstream when available).",
     mdModelId: "Model ID",
     mdDisplayName: "Display name",
     mdOwnedBy: "Provider",
@@ -242,7 +242,7 @@ const dict = {
     apiHelpTitle: "Доступ через API",
     apiBaseLabel: "OpenAI-совместимый базовый URL:",
     apiKeyLine: "API-ключ — это тот же токен доступа, которым вы входите здесь.",
-    apiModelsLine: "ID моделей: GET /v1/models возвращает ID моделей, настроенных на шлюзе, но не подтверждает, что ваш аккаунт или провайдеры их поддерживают. Фактическая доступность зависит от аккаунта и провайдера.",
+    apiModelsLine: "ID моделей: GET /v1/models запрашивает список моделей, доступных вашему аккаунту на upstream (или использует список из конфигурации шлюза).",
     apiPrereqTitle: "Требование к серверу",
     apiPrereqText: "Обновите шлюз и установите на сервере AG_OPENAI_ENABLED=true. Без адаптера запросы Chat Completions не преобразуются.",
     apiNoteTitle: "Примечание",
@@ -267,7 +267,7 @@ const dict = {
     apiCopied: "Скопировано",
     apiCopyError: "Не удалось скопировать. Выделите текст и скопируйте его вручную.",
     modelDetailsHint: "Нажмите, чтобы посмотреть сведения",
-    modelDetailsNote: "Это рекламируемый список моделей сервера (GET /v1/models). Он не подтверждает, что модель фактически доступна вашему аккаунту.",
+    modelDetailsNote: "Список моделей получен от шлюза (GET /v1/models) на основе доступных моделей upstream.",
     mdModelId: "ID модели",
     mdDisplayName: "Отображаемое имя",
     mdOwnedBy: "Провайдер",
@@ -651,22 +651,14 @@ export default function App() {
       if (res.ok) {
         const data: ModelsResponse = await res.json();
         const serverModels = data.data || [];
-        const serverModelMap = new Map(serverModels.map(m => [m.id, m]));
-
-        const modelList: ModelInfo[] = [];
-        // Add all allowed models (Gemini family, Claude 4.6 only, GPT OSS only) in defined order
-        for (const allowedId of IDE_ALLOWED_MODELS) {
-          if (!isAllowedModel(allowedId)) continue;
-          if (serverModelMap.has(allowedId)) {
-            modelList.push(serverModelMap.get(allowedId)!);
-          } else {
-            modelList.push({
-              id: allowedId,
-              object: 'model',
-              owned_by: 'antigravity',
-            });
-          }
-        }
+        const modelList: ModelInfo[] =
+          serverModels.length > 0
+            ? serverModels
+            : IDE_ALLOWED_MODELS.filter(isAllowedModel).map(id => ({
+                id,
+                object: 'model',
+                owned_by: 'antigravity',
+              }));
         setModels(modelList);
         
         let quotaSuccess = false;

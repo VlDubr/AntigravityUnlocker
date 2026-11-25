@@ -12,20 +12,44 @@ use std::sync::atomic::Ordering;
 /// `expires_at` is null or Unix SECONDS (the client multiplies by 1000).
 pub async fn quota(
     State(state): State<AppState>,
-    AuthenticatedKey(key): AuthenticatedKey,
+    auth: AuthenticatedKey,
 ) -> impl IntoResponse {
+    let key = auth.0.clone();
     let expires_at = if key.expires_at > 0 {
         Value::Number(key.expires_at.into())
     } else {
         Value::Null
     };
+
+    // Real per-model remaining quota from the upstream account, when available.
+    let mut models = serde_json::Map::new();
+    let mut resets = serde_json::Map::new();
+    if state.config.models.advertise.is_empty() {
+        for entry in crate::handlers::models::fetch_upstream_models(&state, &auth)
+            .await
+            .unwrap_or_default()
+        {
+            let Some(id) = entry.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(fraction) = entry.get("quota_remaining_fraction").and_then(Value::as_f64)
+            else {
+                continue;
+            };
+            models.insert(id.to_string(), json!((fraction.clamp(0.0, 1.0) * 100.0).round() as u64));
+            if let Some(reset) = entry.get("quota_reset_time").and_then(Value::as_str) {
+                resets.insert(id.to_string(), json!(reset));
+            }
+        }
+    }
+
     Json(json!({
         "total_credits": key.total_credits,
         "expires_at": expires_at,
         "enable_credit_overages": state.credit_overages.load(Ordering::Relaxed),
         "tier": key.tier,
-        "models": {},
-        "resets": {},
+        "models": models,
+        "resets": resets,
     }))
 }
 

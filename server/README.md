@@ -393,12 +393,13 @@ client IP mainly changes what IP fingerprint the upstream observes.
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/health` | none | liveness probe; `{"status":"ok"}` |
-| GET | `/v1/models` | Bearer key | OpenAI-style model list (`object:"list"`, `data[]`) |
+| GET | `/v1/models` | Bearer key | OpenAI-style model list (`object:"list"`, `data[]`) fetched from upstream `fetchAvailableModels` (60s per-account cache) unless `[models] advertise` is set |
 | POST | `/v1/chat/completions` | Bearer key | OpenAI-style text chat and tool calls when `[openai] enabled = true`; otherwise passthrough |
-| GET | `/v1/quota` | Bearer key | quota snapshot: `tier`, `total_credits`, `expires_at` (null or unix **seconds**), `enable_credit_overages`, `models:{}`, `resets:{}` |
+| GET | `/v1/quota` | Bearer key | quota snapshot: `tier`, `total_credits`, `expires_at` (null or unix **seconds**), `enable_credit_overages`, `models:{}`, `resets:{}` populated from `fetchAvailableModels` |
 | POST | `/v1/quota/config` | Bearer key | body `{"enable_credit_overages": bool}`; flips the flag (persisted to `state_file`) |
 | GET | `/v1/client-update?platform=...` | none | update manifest; empty `version` when unconfigured; `platform=macos` normalizes to `mac-arm` |
 | GET | `/v1/client-update/download/{asset_id}` | none | streamed update asset; unknown id → 404 |
+| GET | `/v1/proxy-connect?host=...&port=443` (WebSocket) | Bearer key | bidirectional TCP tunnel for HTTP `CONNECT` (ports `80`/`443`, public IP only; used by Antigravity 2.0) |
 | GET | `/v1/tunnel?token=KEY` (WebSocket) | query token or Bearer | client tunnel worker; 401/403/404 before upgrade on auth/permission/disabled |
 | ANY | `/v1internal*`, `/v1/*` (fallback) | Bearer key | streaming pass-through to upstream; token injected, provenance headers stripped, single transparent retry on upstream 401 |
 

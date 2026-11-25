@@ -355,9 +355,14 @@ pub(crate) fn convert_request(input: &Value) -> Result<ConvertedChat, AppError> 
     if !system_texts.is_empty() {
         // The native contract carries the system text on a literal "user"
         // role inside `systemInstruction`.
+        // Upstream returns a synthetic 429 RESOURCE_EXHAUSTED on Copilot's
+        // "Follow Microsoft content policies" boilerplate; normalize it.
+        let system_text = system_texts
+            .join(SYSTEM_JOINER)
+            .replace("Follow Microsoft content policies", "Follow standard content policies");
         request.insert(
             "systemInstruction".to_string(),
-            json!({ "role": "user", "parts": [text_part(&system_texts.join(SYSTEM_JOINER))] }),
+            json!({ "role": "user", "parts": [text_part(&system_text)] }),
         );
     }
     if let Some(tools) = tools {

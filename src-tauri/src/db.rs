@@ -67,8 +67,12 @@ pub fn inject_real_token(
         rusqlite::params![ide_type, token, refresh_token, expiry, proxy_url, ide_type, now],
     ).map_err(|e| format!("Failed to store session in database: {}", e))?;
 
-    // Store in OS Keyring / Credential Manager
-    if let Err(e) = write_real_token_to_keyring(token, refresh_token, expiry) {
+    // For Antigravity 2.0, preserve an existing native Google OAuth refresh_token
+    // in the OS keyring so repeated launches do not overwrite it with the gateway placeholder.
+    let preserve_native_keyring = ide_type == "Antigravity 2.0" && has_native_refresh_token();
+    if preserve_native_keyring {
+        eprintln!("[Client] Preserving existing native Google OAuth credential for {}", ide_type);
+    } else if let Err(e) = write_real_token_to_keyring(token, refresh_token, expiry) {
         eprintln!("[Client] Notice: Keyring storage not available ({}), relying on session database", e);
     }
 
@@ -140,6 +144,30 @@ fn get_ide_settings_path(ide_type: &str) -> Result<PathBuf, String> {
         let home = dirs::home_dir().ok_or("Failed to get home directory")?;
         let subfolder = if ide_type == "Antigravity 2.0" { "Antigravity" } else { "Antigravity IDE" };
         Ok(home.join(format!(".config/{}/User/settings.json", subfolder)))
+    }
+}
+
+/// Returns true when `gemini:antigravity` in the OS keyring already holds a
+/// real OAuth refresh token (not empty and not the gateway placeholder).
+fn has_native_refresh_token() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let Some(blob) = windows::read_generic_credential_blob("gemini:antigravity") else {
+            return false;
+        };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&blob) else {
+            return false;
+        };
+        return v
+            .get("token")
+            .and_then(|t| t.get("refresh_token"))
+            .and_then(|r| r.as_str())
+            .map(|s| !s.trim().is_empty() && s != "proxy_managed_refresh_token")
+            .unwrap_or(false);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
     }
 }
 
@@ -221,10 +249,9 @@ fn write_real_token_to_keyring(access_token: &str, refresh_token: &str, expiry: 
 mod windows {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::Security::Credentials::{
-        CredDeleteW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+        CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
+        CRED_TYPE_GENERIC,
     };
-    #[cfg(test)]
-    use windows_sys::Win32::Security::Credentials::{CredFree, CredReadW};
 
     fn wide_null(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -272,7 +299,6 @@ mod windows {
     }
 
     /// Read back the stored blob; `None` when the entry does not exist.
-    #[cfg(test)]
     pub fn read_generic_credential_blob(target: &str) -> Option<Vec<u8>> {
         let target_w = wide_null(target);
         let mut ptr: *mut CREDENTIALW = std::ptr::null_mut();

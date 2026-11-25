@@ -85,7 +85,14 @@ pub async fn completions(
             .map_err(|_| AppError::BadGateway("upstream request timed out".to_string()))??
     };
     if !upstream.status().is_success() {
-        return Ok(upstream_error(upstream).await);
+        return Ok(upstream_error(
+            upstream,
+            converted.model.as_str(),
+            payload.to_string().len(),
+            converted.stream,
+            &payload["request"],
+        )
+        .await);
     }
 
     if converted.stream {
@@ -215,12 +222,26 @@ async fn read_body(body: Body, limit: usize, timeout_secs: u64) -> Result<Bytes,
     result.map_err(|e| AppError::BadGateway(format!("failed to read upstream response: {e}")))
 }
 
-async fn upstream_error(response: Response) -> Response {
+async fn upstream_error(
+    response: Response,
+    model: &str,
+    request_bytes: usize,
+    stream: bool,
+    native_request: &Value,
+) -> Response {
     let status = response.status();
     let bytes = read_body(response.into_body(), 64 * 1024, 15).await;
     if let Err(err) = &bytes {
         tracing::warn!(error = %err, "failed to read upstream error response");
     }
+    let raw_body = bytes
+        .as_ref()
+        .ok()
+        .map(|b| {
+            let end = b.len().min(2048);
+            String::from_utf8_lossy(&b[..end]).replace(['\r', '\n'], " ")
+        })
+        .unwrap_or_default();
     let message = bytes
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -231,6 +252,29 @@ async fn upstream_error(response: Response) -> Response {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| format!("upstream returned HTTP {status}"));
+    let contents_len = native_request
+        .get("contents")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let has_system = native_request.get("systemInstruction").is_some();
+    let has_tools = native_request.get("tools").is_some();
+    let gen_cfg = native_request
+        .get("generationConfig")
+        .map(Value::to_string)
+        .unwrap_or_else(|| "none".to_string());
+    tracing::warn!(
+        %status,
+        %model,
+        stream,
+        request_bytes,
+        contents_len,
+        has_system,
+        has_tools,
+        %gen_cfg,
+        %message,
+        %raw_body,
+        "generateContent upstream returned a non-2xx response"
+    );
     let client_status = if status == StatusCode::UNAUTHORIZED {
         StatusCode::BAD_GATEWAY
     } else {

@@ -1,4 +1,4 @@
-# 🌌 AntigravityUnlocker (Client v1.0.78 + Self-Hosted Server)
+# 🌌 AntigravityUnlocker (Client v1.0.79 + Self-Hosted Server)
 
 [![GitHub releases](https://img.shields.io/github/v/release/VlDubr/AntigravityUnlocker?style=flat-square&label=Версия)](https://github.com/VlDubr/AntigravityUnlocker/releases)
 [![Platforms](https://img.shields.io/badge/Платформы-Windows%20|%20Linux%20Server-blue?style=flat-square)](https://github.com/VlDubr/AntigravityUnlocker/releases)
@@ -7,17 +7,12 @@
 
 ---
 
-## 🆕 Что нового в v1.0.78
+## 🆕 Что нового в v1.0.79
 
-- **Собственный сервер-шлюз (`server/`):** лёгкий Rust-сервер под Linux x86_64 (`musl`), запуск через `systemd`, поддержка HTTPS через Caddy (`flush_interval -1`) и WebSocket reverse-tunnel (`routing_mode`). Подробная инструкция по развёртыванию: [server/README.md](server/README.md).
-- **OpenAI Chat Completions API (`/v1/chat/completions`):** opt-in адаптер (`AG_OPENAI_ENABLED=true`) с поддержкой стриминга (SSE) и function calling (`tool_calls` + сохранение `thoughtSignature`).
-- **Интеграция с Copilot в интерфейсе клиента:** рядом с кнопками `IDE`, `V2.0` и `CLI` добавлена кнопка **API** с пошаговой инструкцией подключения к VS Code / GitHub Copilot.
-- **Карточка характеристик модели:** клик по модели в списке открывает модальное окно с её ID, именем, лимитами контекста/вывода и поддержкой возможностей (изображения, tools), если эти данные предоставлены сервером.
-- **Исправления Antigravity 2.0 и авторизации:**
-  - Исключён loopback из прокси (`--proxy-bypass-list=localhost;127.0.0.1;[::1]`) — исправлен чёрный экран (`ERR_EMPTY_RESPONSE`) при запуске Antigravity 2.0.
-  - Исправлена запись/чтение учётных данных Windows Credential Manager через нативный Win32 API (`CredWriteW` / `CredDeleteW` / `CredReadW`).
-  - Скрипт `server/tools/extract-creds.py` по умолчанию выводит только рекомендуемую consumer-пару `client_id` / `client_secret` для Antigravity 2.0 (`--all-clients` для полной диагностики).
-  - Discovery `loadCodeAssist` переведено на Antigravity Hub User-Agent и `ideType=ANTIGRAVITY`, благодаря чему личные аккаунты используют управляемый проект (`aicode-consumers`) без ручного `AG_GOOGLE_PROJECT_ID`.
+- **CONNECT-туннель для Antigravity 2.0 (`/v1/proxy-connect`):** добавлен аутентифицированный WebSocket TCP-мост на сервере (с проверкой портов `80`/`443` и публичных IP) и обработка `CONNECT` в локальном прокси клиента.
+- **Исправление `wss://` handshake в клиенте (`rustls`):** явная установка `CryptoProvider` (`ring`) при старте приложения — устраняет ошибку `forcibly closed` при запуске Antigravity 2.0 и обратного туннеля.
+- **Актуальный список моделей и квот:** `/v1/models` и `/v1/quota` на сервере подтягивают реальные модели, их метаданные и остаток квоты через `fetchAvailableModels` (с кэшем на 60 секунд); клиент больше не скрывает модели жёстким фильтром.
+- **Совместимость с GitHub Copilot (VS Code):** нормализация `systemInstruction` в OpenAI-адаптере (устраняет синтетический `429 Resource has been exhausted` от upstream на стандартный boilerplate Copilot) и диагностическое логирование ошибок `generateContent`.
 
 ---
 
@@ -30,21 +25,21 @@
 
 ---
 
-## 📥 Скачать релиз (v1.0.78)
+## 📥 Скачать релиз (v1.0.79)
 
 ### 🖥️ Antigravity Client (Windows)
 
 | Компонент | Формат | Ссылка на скачивание |
 |---|---|---|
-| 🪟 **Windows (10/11 x64)** | Setup EXE (установщик NSIS) | [**Antigravity.Client_1.0.78_x64-setup.exe**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.78/Antigravity.Client_1.0.78_x64-setup.exe) |
-| 🪟 **Windows (10/11 x64)** | MSI Installer | [**Antigravity.Client_1.0.78_x64_en-US.msi**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.78/Antigravity.Client_1.0.78_x64_en-US.msi) |
-| 🪟 **Windows (10/11 x64)** | Portable EXE | [**antigravity-client.exe**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.78/antigravity-client.exe) |
+| 🪟 **Windows (10/11 x64)** | Setup EXE (установщик NSIS) | [**Antigravity.Client_1.0.79_x64-setup.exe**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.79/Antigravity.Client_1.0.79_x64-setup.exe) |
+| 🪟 **Windows (10/11 x64)** | MSI Installer | [**Antigravity.Client_1.0.79_x64_en-US.msi**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.79/Antigravity.Client_1.0.79_x64_en-US.msi) |
+| 🪟 **Windows (10/11 x64)** | Portable EXE | [**antigravity-client.exe**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.79/antigravity-client.exe) |
 
 ### 🐧 Self-Hosted Server (Linux VPS)
 
 | Компонент | Архитектура | Ссылка на скачивание |
 |---|---|---|
-| 🐧 **Linux (static musl)** | x86_64 | [**antigravity-server-linux-x86_64**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.78/antigravity-server-linux-x86_64) |
+| 🐧 **Linux (static musl)** | x86_64 | [**antigravity-server-linux-x86_64**](https://github.com/VlDubr/AntigravityUnlocker/releases/download/v1.0.79/antigravity-server-linux-x86_64) |
 
 📦 Все сборки доступны на [**Странице релизов (Releases)**](https://github.com/VlDubr/AntigravityUnlocker/releases).
 
