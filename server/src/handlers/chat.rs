@@ -15,7 +15,7 @@ use rand::RngCore;
 use serde_json::{json, Value};
 
 use crate::auth::AuthenticatedKey;
-use crate::chat_request::convert_request;
+use crate::chat_request::{convert_request, ensure_gemini_thought_signatures};
 use crate::chat_response::{convert_response, ChatMeta, StreamState};
 use crate::error::AppError;
 use crate::handlers::forward;
@@ -88,6 +88,9 @@ pub async fn completions(
         created,
     };
     let mut native_request = converted.request;
+    if upstream_model.to_ascii_lowercase().starts_with("gemini") {
+        ensure_gemini_thought_signatures(&mut native_request);
+    }
     let request_object = native_request
         .as_object_mut()
         .ok_or_else(|| AppError::Internal("invalid converted request".to_string()))?;

@@ -140,12 +140,15 @@ fn optional_string<'a>(
     }
 }
 
-/// Optional `thoughtSignature` on a part.
+/// Optional `thoughtSignature` (or snake_case `thought_signature`) on a part.
 fn part_signature<'a>(
     object: &'a Map<String, Value>,
     at: &str,
 ) -> Result<Option<&'a str>, AppError> {
-    optional_string(object, "thoughtSignature", at)
+    if let Some(sig) = optional_string(object, "thoughtSignature", at)? {
+        return Ok(Some(sig));
+    }
+    optional_string(object, "thought_signature", at)
 }
 
 /// Extracts real numeric token counts; never fabricates numbers.

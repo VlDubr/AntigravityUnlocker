@@ -514,7 +514,10 @@ pub(crate) fn decode_tool_call_id(id: &str) -> Result<(String, Option<String>), 
         .to_string();
     let signature = match object.get("s") {
         None => None,
-        Some(Value::String(signature)) => Some(signature.clone()),
+        Some(Value::String(signature)) if !signature.is_empty() => Some(signature.clone()),
+        Some(Value::String(_)) => {
+            return Err(malformed("`s` field is an empty string".to_string()))
+        }
         Some(_) => return Err(malformed("`s` field is not a string".to_string())),
     };
     Ok((native, signature))
@@ -804,6 +807,54 @@ fn tool_choice_config(value: &Value) -> Result<Value, AppError> {
     Ok(json!({ "mode": "ANY", "allowedFunctionNames": [name] }))
 }
 
+/// Official Google Gemini sentinel that skips thought-signature validation for
+/// historical function calls transferred from another model or lacking a
+/// captured signature.
+pub(crate) const SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+
+/// Ensures every `model` turn containing `functionCall` parts has a
+/// `thoughtSignature` on its first `functionCall` part (required by Gemini 3/4).
+/// Preserves existing real signatures and leaves subsequent parallel calls in
+/// the same turn untouched.
+pub(crate) fn ensure_gemini_thought_signatures(native_request: &mut Value) {
+    let Some(contents) = native_request
+        .get_mut("contents")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for content in contents {
+        let is_model = content
+            .get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r == "model");
+        if !is_model {
+            continue;
+        }
+        let Some(parts) = content.get_mut("parts").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for part in parts {
+            let Some(obj) = part.as_object_mut() else {
+                continue;
+            };
+            if obj.get("functionCall").is_some() {
+                let has_real_signature = obj
+                    .get("thoughtSignature")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty());
+                if !has_real_signature {
+                    obj.insert(
+                        "thoughtSignature".to_string(),
+                        Value::String(SKIP_THOUGHT_SIGNATURE.to_string()),
+                    );
+                }
+                break;
+            }
+        }
+    }
+}
+
 /// Build one `functionCall` part from an OpenAI tool-call entry. The wire id is
 /// decoded, so an embedded `thoughtSignature` is restored into the part and the
 /// native id is what the upstream sees.
@@ -862,8 +913,16 @@ fn tool_call_part(call: &Value, at: &str, builder: &mut TurnBuilder) -> Result<V
         }
     };
 
-    let (native_id, signature) =
+    let (native_id, id_signature) =
         decode_tool_call_id(wire_id).map_err(|err| contextual(err, &format!("{at}.id")))?;
+    let signature = id_signature.or_else(|| {
+        call.get("extra_content")
+            .and_then(|e| e.get("google"))
+            .and_then(|g| g.get("thought_signature"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    });
     builder.register_call(&native_id, name, at)?;
 
     let mut call_object = Map::new();
@@ -1078,6 +1137,7 @@ mod tests {
             format!("call_ag1_{}", URL_SAFE_NO_PAD.encode(b"not json at all")),
             format!("call_ag1_{}", URL_SAFE_NO_PAD.encode(b"[1,2]")),
             format!("call_ag1_{}", URL_SAFE_NO_PAD.encode(br#"{"i":"x","s":5}"#)),
+            format!("call_ag1_{}", URL_SAFE_NO_PAD.encode(br#"{"i":"x","s":""}"#)),
         ];
         for id in cases {
             match decode_tool_call_id(&id) {
@@ -1088,6 +1148,46 @@ mod tests {
                 other => panic!("expected BadRequest for {id:?}, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn empty_part_signature_replaced_by_sentinel_real_one_kept() {
+        let mut req = json!({
+            "contents": [
+                { "role": "user", "parts": [{ "text": "hi" }] },
+                { "role": "model", "parts": [
+                    { "functionCall": { "name": "f", "args": {} }, "thoughtSignature": "" },
+                    { "functionCall": { "name": "g", "args": {} }, "thoughtSignature": "real" }
+                ] }
+            ]
+        });
+        ensure_gemini_thought_signatures(&mut req);
+        let parts = req["contents"][1]["parts"].as_array().unwrap();
+        assert_eq!(parts[0]["thoughtSignature"], SKIP_THOUGHT_SIGNATURE);
+        assert_eq!(parts[1]["thoughtSignature"], "real");
+    }
+
+    #[test]
+    fn extra_content_signature_used_when_wire_id_has_none() {
+        let converted = ok(json!({
+            "model": "gemini-pro",
+            "messages": [
+                { "role": "user", "content": "hi" },
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "plain_call_1",
+                        "type": "function",
+                        "function": { "name": "f", "arguments": "{}" },
+                        "extra_content": { "google": { "thought_signature": "extra-sig" } }
+                    }]
+                },
+                { "role": "tool", "tool_call_id": "plain_call_1", "content": "done" }
+            ]
+        }));
+        let parts = converted.request["contents"][1]["parts"].as_array().unwrap();
+        assert_eq!(parts[0]["thoughtSignature"], "extra-sig");
     }
 
     #[test]

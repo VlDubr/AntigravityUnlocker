@@ -647,3 +647,92 @@ async fn prompt_caching_preserves_session_id_sticky_account_and_cached_tokens() 
         "429 must unpin wildcard session so the next retry tries another account"
     );
 }
+
+#[tokio::test]
+async fn gemini_injects_skip_thought_signature_on_unsigned_tool_calls_only() {
+    let (gateway, mock) = setup(true, "configured-project").await;
+    let client = reqwest::Client::new();
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "read_agent",
+            "parameters": { "type": "object", "properties": {} }
+        }
+    }]);
+    let messages = json!([
+        { "role": "user", "content": "Check agent" },
+        {
+            "role": "assistant",
+            "content": "Checking...",
+            "tool_calls": [
+                {
+                    "id": "toolu_from_claude_1",
+                    "type": "function",
+                    "function": { "name": "read_agent", "arguments": "{}" }
+                },
+                {
+                    "id": "toolu_from_claude_2",
+                    "type": "function",
+                    "function": { "name": "read_agent", "arguments": "{}" }
+                }
+            ]
+        },
+        { "role": "tool", "tool_call_id": "toolu_from_claude_1", "content": "ok1" },
+        { "role": "tool", "tool_call_id": "toolu_from_claude_2", "content": "ok2" },
+        {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_with_extra",
+                "type": "function",
+                "function": { "name": "read_agent", "arguments": "{}" },
+                "extra_content": { "google": { "thought_signature": "real-extra-sig" } }
+            }]
+        },
+        { "role": "tool", "tool_call_id": "call_with_extra", "content": "ok3" }
+    ]);
+
+    let gemini_resp = request(
+        &client,
+        &gateway,
+        json!({ "model": "gemini-3-flash", "messages": messages, "tools": tools }),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(gemini_resp.status(), StatusCode::OK);
+
+    let claude_resp = request(
+        &client,
+        &gateway,
+        json!({ "model": "claude-opus-5-5", "messages": messages, "tools": tools }),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(claude_resp.status(), StatusCode::OK);
+
+    let captured = mock.requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+
+    // Gemini request: first unsigned functionCall in turn 1 gets sentinel;
+    // second parallel call stays unsigned; turn 3 preserves real extra_content signature.
+    let g_contents = captured[0].2["request"]["contents"].as_array().unwrap();
+    let g_turn1_parts = g_contents[1]["parts"].as_array().unwrap();
+    assert!(g_turn1_parts[0].get("thoughtSignature").is_none()); // text part
+    assert_eq!(
+        g_turn1_parts[1]["thoughtSignature"],
+        "skip_thought_signature_validator"
+    );
+    assert!(
+        g_turn1_parts[2].get("thoughtSignature").is_none(),
+        "subsequent parallel call must not receive synthetic signature"
+    );
+    let g_turn3_parts = g_contents[3]["parts"].as_array().unwrap();
+    assert_eq!(g_turn3_parts[0]["thoughtSignature"], "real-extra-sig");
+
+    // Claude request: unsigned calls must NOT receive Gemini's sentinel.
+    let c_contents = captured[1].2["request"]["contents"].as_array().unwrap();
+    let c_turn1_parts = c_contents[1]["parts"].as_array().unwrap();
+    assert!(c_turn1_parts[1].get("thoughtSignature").is_none());
+}
