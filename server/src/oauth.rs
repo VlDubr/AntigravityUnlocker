@@ -18,6 +18,11 @@ use crate::error::AppError;
 
 /// How long an account is skipped after a 429 from the token endpoint.
 const COOLDOWN: Duration = Duration::from_secs(60);
+/// How long a session stays pinned to the same Google account under `"*"`
+/// wildcard routing so upstream KV/prompt caches stay warm.
+const SESSION_AFFINITY_TTL: Duration = Duration::from_secs(15 * 60);
+const SESSION_AFFINITY_PRUNE_THRESHOLD: usize = 1024;
+const SESSION_AFFINITY_MAX_ENTRIES: usize = 4096;
 /// Background refresh loop period.
 const BACKGROUND_TICK: Duration = Duration::from_secs(30);
 /// Hard ceiling on a single token-endpoint refresh (send + body read). Without
@@ -72,6 +77,9 @@ pub struct OAuthManager {
     rr: AtomicUsize,
     /// account id -> cooldown-until instant (set on upstream 429).
     cooldowns: Mutex<HashMap<String, Instant>>,
+    /// Fixed-size hash of session affinity key -> (concrete account id, expires_at).
+    /// Lock order: always acquire `session_accounts` before `cooldowns`.
+    session_accounts: Mutex<HashMap<[u8; 16], (String, Instant)>>,
 }
 
 impl OAuthManager {
@@ -97,6 +105,7 @@ impl OAuthManager {
             accounts,
             rr: AtomicUsize::new(0),
             cooldowns: Mutex::new(HashMap::new()),
+            session_accounts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -160,6 +169,115 @@ impl OAuthManager {
         account_id: &str,
     ) -> Result<(String, u64, String), AppError> {
         let acc = self.resolve(account_id).await?;
+        self.get_token_for_account(acc).await
+    }
+
+    fn session_key_hash(session_key: &str) -> [u8; 16] {
+        let digest = crate::handlers::chat::sha256(session_key.as_bytes());
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&digest[..16]);
+        out
+    }
+
+    /// Remove a session's sticky account pin if it still points to `account_id`.
+    /// Called on account-scoped generation quota (429) errors so retries can
+    /// rotate to another healthy account in a wildcard pool.
+    pub async fn unpin_session(&self, session_key: &str, account_id: &str) {
+        if session_key.is_empty() {
+            return;
+        }
+        let key_hash = Self::session_key_hash(session_key);
+        let mut map = self.session_accounts.lock().await;
+        if map.get(&key_hash).is_some_and(|(id, _)| id == account_id) {
+            map.remove(&key_hash);
+        }
+    }
+
+    /// Like [`get_token_with_generation`](Self::get_token_with_generation),
+    /// but when `account_id == "*"` and a non-empty `session_key` is provided,
+    /// atomically pins that session to one healthy Google account for
+    /// [`SESSION_AFFINITY_TTL`] so multi-turn prompt caching hits the same
+    /// account. Falls back to round-robin if the pinned account is missing or
+    /// on 429 cooldown.
+    pub async fn get_token_for_session(
+        &self,
+        account_id: &str,
+        session_key: Option<&str>,
+    ) -> Result<(String, u64, String), AppError> {
+        let Some(sk) = session_key.filter(|s| !s.is_empty() && account_id == "*") else {
+            return self.get_token_with_generation(account_id).await;
+        };
+
+        let key_hash = Self::session_key_hash(sk);
+        let now = Instant::now();
+        let acc = {
+            let mut map = self.session_accounts.lock().await;
+            let cooldowns = self.cooldowns.lock().await;
+            let is_cooled = |id: &str| cooldowns.get(id).is_some_and(|until| *until > now);
+
+            if let Some((mapped_id, expires_at)) = map.get(&key_hash) {
+                if *expires_at > now && !is_cooled(mapped_id) {
+                    if let Some(acc) = self.find(mapped_id) {
+                        let id = acc.id.clone();
+                        map.insert(key_hash, (id, now + SESSION_AFFINITY_TTL));
+                        acc
+                    } else {
+                        self.pick_and_pin_locked(&mut map, &is_cooled, key_hash, now)?
+                    }
+                } else {
+                    self.pick_and_pin_locked(&mut map, &is_cooled, key_hash, now)?
+                }
+            } else {
+                self.pick_and_pin_locked(&mut map, &is_cooled, key_hash, now)?
+            }
+        };
+
+        self.get_token_for_account(acc).await
+    }
+
+    fn pick_and_pin_locked<'a>(
+        &'a self,
+        map: &mut HashMap<[u8; 16], (String, Instant)>,
+        is_cooled: &impl Fn(&str) -> bool,
+        key_hash: [u8; 16],
+        now: Instant,
+    ) -> Result<&'a AccountState, AppError> {
+        let n = self.accounts.len();
+        if n == 0 {
+            return Err(AppError::Internal(
+                "unknown account: no accounts configured".to_string(),
+            ));
+        }
+        let start = self.rr.fetch_add(1, Ordering::Relaxed);
+        let mut chosen = None;
+        for i in 0..n {
+            let acc = &self.accounts[(start + i) % n];
+            if !is_cooled(&acc.id) {
+                chosen = Some(acc);
+                break;
+            }
+        }
+        let acc = chosen.ok_or_else(|| AppError::BadGateway("all accounts in cooldown".to_string()))?;
+        if map.len() >= SESSION_AFFINITY_PRUNE_THRESHOLD {
+            map.retain(|_, (_, expires_at)| *expires_at > now);
+        }
+        if map.len() >= SESSION_AFFINITY_MAX_ENTRIES {
+            if let Some(oldest_key) = map
+                .iter()
+                .min_by_key(|(_, (_, exp))| *exp)
+                .map(|(k, _)| *k)
+            {
+                map.remove(&oldest_key);
+            }
+        }
+        map.insert(key_hash, (acc.id.clone(), now + SESSION_AFFINITY_TTL));
+        Ok(acc)
+    }
+
+    async fn get_token_for_account(
+        &self,
+        acc: &AccountState,
+    ) -> Result<(String, u64, String), AppError> {
         // Fast path: valid cached token.
         if let Some(t) = acc.cached_fresh(self.refresh_skew).await {
             return Ok((t.access_token, t.generation, acc.id.clone()));
@@ -452,5 +570,52 @@ mod tests {
         mgr.invalidate_if_generation(&concrete, gen).await;
         mgr.get_token(&concrete).await.unwrap();
         assert_eq!(mock.hits.load(Ordering::SeqCst), hits_before + 1);
+    }
+
+    #[tokio::test]
+    async fn sticky_session_pins_wildcard_account_and_fails_over_on_cooldown() {
+        let (url, _mock) = spawn_mock(3599).await;
+        let mgr = manager(url, "secret", vec![("a", "rt1"), ("b", "rt2")]);
+
+        let (_, _, first) = mgr.get_token_for_session("*", Some("sess-1")).await.unwrap();
+        for _ in 0..4 {
+            let (_, _, next) = mgr.get_token_for_session("*", Some("sess-1")).await.unwrap();
+            assert_eq!(next, first, "same session must stay pinned to one account");
+        }
+
+        // Distinct session gets the next round-robin account.
+        let (_, _, second) = mgr.get_token_for_session("*", Some("sess-2")).await.unwrap();
+        assert_ne!(second, first, "distinct sessions should distribute across pool");
+
+        // Cooldown on the pinned account forces failover and re-pins to the healthy one.
+        mgr.set_cooldown(&first).await;
+        let (_, _, failover) = mgr.get_token_for_session("*", Some("sess-1")).await.unwrap();
+        assert_ne!(failover, first, "cooled-down pinned account must fail over");
+
+        // Unpinning a matching account rotates on the next call.
+        let (url2, _mock2) = spawn_mock(3599).await;
+        let mgr2 = Arc::new(manager(url2, "secret", vec![("a", "rt1"), ("b", "rt2")]));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let m = mgr2.clone();
+            handles.push(tokio::spawn(async move {
+                m.get_token_for_session("*", Some("concurrent-sess"))
+                    .await
+                    .unwrap()
+                    .2
+            }));
+        }
+        let mut picked = std::collections::HashSet::new();
+        for h in handles {
+            picked.insert(h.await.unwrap());
+        }
+        assert_eq!(picked.len(), 1, "concurrent calls for one session must pick one account");
+        let pinned = picked.into_iter().next().unwrap();
+        mgr2.unpin_session("concurrent-sess", &pinned).await;
+        let (_, _, rotated) = mgr2
+            .get_token_for_session("*", Some("concurrent-sess"))
+            .await
+            .unwrap();
+        assert_ne!(rotated, pinned, "unpinned session should rotate to next account");
     }
 }

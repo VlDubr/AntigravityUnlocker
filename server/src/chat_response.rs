@@ -172,11 +172,12 @@ fn extract_usage(payload: &Map<String, Value>) -> Result<Option<Value>, AppError
     };
     let prompt = count("promptTokenCount")?;
     let completion = count("candidatesTokenCount")?;
+    let cached = count("cachedContentTokenCount")?;
     let total = match count("totalTokenCount")? {
         Some(total) => Some(total),
         None => prompt.zip(completion).map(|(p, c)| p + c),
     };
-    if prompt.is_none() && completion.is_none() && total.is_none() {
+    if prompt.is_none() && completion.is_none() && total.is_none() && cached.is_none() {
         return Ok(None);
     }
     let mut usage = Map::new();
@@ -188,6 +189,12 @@ fn extract_usage(payload: &Map<String, Value>) -> Result<Option<Value>, AppError
     }
     if let Some(total) = total {
         usage.insert("total_tokens".to_string(), json!(total));
+    }
+    if let Some(cached) = cached {
+        usage.insert(
+            "prompt_tokens_details".to_string(),
+            json!({ "cached_tokens": cached }),
+        );
     }
     Ok(Some(Value::Object(usage)))
 }
@@ -570,8 +577,8 @@ impl StreamState {
         if event.finish.is_some() {
             self.finish = event.finish;
         }
-        if event.usage.is_some() {
-            self.usage = event.usage;
+        if let Some(usage) = event.usage {
+            merge_usage(&mut self.usage, usage);
         }
 
         let mut out = Vec::new();
@@ -682,7 +689,7 @@ impl StreamState {
         }
         out.push(self.chunk(Value::Object(Map::new()), Some(finish_reason)));
         if self.include_usage {
-            if let Some(usage) = self.usage.take() {
+            if let Some(usage) = self.usage.clone() {
                 let mut chunk = Map::new();
                 chunk.insert("id".to_string(), json!(self.meta.id));
                 chunk.insert("object".to_string(), json!("chat.completion.chunk"));
@@ -695,6 +702,38 @@ impl StreamState {
         }
         self.closed = true;
         Ok(out)
+    }
+
+    pub(crate) fn usage(&self) -> Option<&Value> {
+        self.usage.as_ref()
+    }
+}
+
+/// Merges partial streaming usage snapshots field-by-field so a later event
+/// carrying only e.g. `cachedContentTokenCount` never erases earlier token counts.
+fn merge_usage(slot: &mut Option<Value>, incoming: Value) {
+    let Some(Value::Object(existing)) = slot.as_mut() else {
+        *slot = Some(incoming);
+        return;
+    };
+    let Value::Object(new_map) = incoming else {
+        *slot = Some(incoming);
+        return;
+    };
+    for (k, v) in new_map {
+        if k == "prompt_tokens_details" {
+            if let Value::Object(new_details) = v {
+                if let Some(Value::Object(existing_details)) = existing.get_mut(&k) {
+                    for (dk, dv) in new_details {
+                        existing_details.insert(dk, dv);
+                    }
+                } else {
+                    existing.insert(k, Value::Object(new_details));
+                }
+            }
+        } else {
+            existing.insert(k, v);
+        }
     }
 }
 
@@ -1003,6 +1042,59 @@ mod tests {
             1,
             "usage chunk only when requested and present"
         );
+    }
+
+    #[test]
+    fn cached_content_tokens_mapped_to_prompt_tokens_details() {
+        let mut value = native(vec![json!({ "text": "ok" })], Some("STOP"));
+        value["usageMetadata"] = json!({
+            "promptTokenCount": 1000,
+            "cachedContentTokenCount": 820,
+            "candidatesTokenCount": 50,
+            "totalTokenCount": 1050
+        });
+        let out = ok(convert_response(&value, &meta()));
+        assert_eq!(out["usage"]["prompt_tokens"], 1000);
+        assert_eq!(out["usage"]["prompt_tokens_details"]["cached_tokens"], 820);
+        assert_eq!(out["usage"]["completion_tokens"], 50);
+        assert_eq!(out["usage"]["total_tokens"], 1050);
+
+        let mut stream = StreamState::new(meta(), true);
+        ok(stream.push(&stream_part(value)));
+        let chunks = ok(stream.finish(true));
+        let usage_chunk = chunks.last().unwrap();
+        assert_eq!(
+            usage_chunk["usage"]["prompt_tokens_details"]["cached_tokens"],
+            820
+        );
+        assert_eq!(
+            stream.usage().unwrap()["prompt_tokens_details"]["cached_tokens"],
+            820
+        );
+
+        let mut bad = native(vec![json!({ "text": "ok" })], Some("STOP"));
+        bad["usageMetadata"] = json!({ "cachedContentTokenCount": "not-a-number" });
+        let err = convert_response(&bad, &meta()).unwrap_err();
+        assert!(err.to_string().contains("cachedContentTokenCount"));
+
+        // Partial cached-only usage chunk must merge with earlier token counts, not erase them.
+        let mut partial_stream = StreamState::new(meta(), true);
+        let mut first_ev = native(vec![json!({ "text": "hi" })], None);
+        first_ev["usageMetadata"] = json!({
+            "promptTokenCount": 200,
+            "candidatesTokenCount": 15,
+            "totalTokenCount": 215
+        });
+        ok(partial_stream.push(&stream_part(first_ev)));
+        let mut second_ev = native(vec![], Some("STOP"));
+        second_ev["usageMetadata"] = json!({ "cachedContentTokenCount": 150 });
+        ok(partial_stream.push(&stream_part(second_ev)));
+        let chunks = ok(partial_stream.finish(true));
+        let merged = &chunks.last().unwrap()["usage"];
+        assert_eq!(merged["prompt_tokens"], 200);
+        assert_eq!(merged["completion_tokens"], 15);
+        assert_eq!(merged["total_tokens"], 215);
+        assert_eq!(merged["prompt_tokens_details"]["cached_tokens"], 150);
     }
 
     #[test]

@@ -12,6 +12,8 @@ use tokio::net::TcpStream;
 use crate::auth::AuthenticatedKey;
 use crate::error::AppError;
 
+const WS_PING_INTERVAL: Duration = Duration::from_secs(25);
+
 #[derive(Debug, Deserialize)]
 pub struct ProxyConnectQuery {
     pub host: String,
@@ -114,6 +116,10 @@ fn is_public_ipv6(ip: Ipv6Addr) -> bool {
 }
 
 async fn handle_ws_tunnel(ws: WebSocket, addr: SocketAddr) {
+    handle_ws_tunnel_with_ping(ws, addr, WS_PING_INTERVAL).await;
+}
+
+async fn handle_ws_tunnel_with_ping(ws: WebSocket, addr: SocketAddr, ping_interval: Duration) {
     let stream = match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addr)).await
     {
         Ok(Ok(s)) => s,
@@ -133,22 +139,32 @@ async fn handle_ws_tunnel(ws: WebSocket, addr: SocketAddr) {
 
     let to_ws = async move {
         let mut buf = vec![0u8; 32 * 1024];
+        let mut ping_ticker = tokio::time::interval(ping_interval);
+        ping_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ping_ticker.tick().await;
         loop {
-            match tcp_read.read(&mut buf).await {
-                Ok(0) => {
-                    let _ = ws_write.send(Message::Close(None)).await;
-                    break;
-                }
-                Ok(n) => {
-                    if ws_write
-                        .send(Message::Binary(buf[..n].to_vec().into()))
-                        .await
-                        .is_err()
-                    {
+            tokio::select! {
+                read = tcp_read.read(&mut buf) => match read {
+                    Ok(0) => {
+                        let _ = ws_write.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Ok(n) => {
+                        if ws_write
+                            .send(Message::Binary(buf[..n].to_vec().into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                },
+                _ = ping_ticker.tick() => {
+                    if ws_write.send(Message::Ping(Default::default())).await.is_err() {
                         break;
                     }
                 }
-                Err(_) => break,
             }
         }
     };
@@ -224,5 +240,73 @@ mod tests {
 
         let ok_params = validate_connect_params("142.250.74.14", 443).unwrap();
         assert_eq!(ok_params, ("142.250.74.14".to_string(), 443));
+    }
+
+    #[tokio::test]
+    async fn ws_tunnel_emits_keepalive_pings_and_preserves_binary_stream() {
+        use axum::routing::get;
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::Message as ClientMsg;
+
+        let echo_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_addr = echo_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = echo_listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = sock.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                let _ = sock.write_all(&buf[..n]).await;
+            }
+        });
+
+        let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_addr = ws_listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/ws",
+            get(move |ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(move |socket| {
+                    handle_ws_tunnel_with_ping(socket, echo_addr, Duration::from_millis(40))
+                })
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(ws_listener, app).await.unwrap();
+        });
+
+        let (mut client_ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://{ws_addr}/ws"))
+                .await
+                .unwrap();
+
+        // While TCP is idle, server must emit a WebSocket Ping keepalive.
+        let ping = tokio::time::timeout(Duration::from_secs(2), client_ws.next())
+            .await
+            .expect("expected keepalive ping")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(ping, ClientMsg::Ping(_)), "expected Ping, got {ping:?}");
+
+        // Binary traffic still works after keepalive ping.
+        client_ws
+            .send(ClientMsg::Binary(b"ping-payload".to_vec().into()))
+            .await
+            .unwrap();
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(2), client_ws.next())
+                .await
+                .expect("expected echo response")
+                .unwrap()
+                .unwrap();
+            match msg {
+                ClientMsg::Ping(_) => continue,
+                ClientMsg::Binary(data) => {
+                    assert_eq!(data.as_ref(), b"ping-payload");
+                    break;
+                }
+                other => panic!("unexpected ws message: {other:?}"),
+            }
+        }
     }
 }

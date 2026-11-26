@@ -98,8 +98,16 @@ pub async fn forward(
         })?;
 
     let account_id = auth.0.account_id.clone();
-    let (token, generation, concrete_account) =
-        state.oauth.get_token_with_generation(&account_id).await?;
+    let session_key = if account_id == "*" && !body_bytes.is_empty() {
+        extract_native_session_id(&body_bytes)
+            .map(|sid| format!("{}:{}:{sid}", auth.0.key.len(), auth.0.key))
+    } else {
+        None
+    };
+    let (token, generation, concrete_account) = state
+        .oauth
+        .get_token_for_session(&account_id, session_key.as_deref())
+        .await?;
     let mut resp = send_upstream(&client, method.clone(), &target, &base_headers, &token, &body_bytes)
         .await?;
 
@@ -112,11 +120,29 @@ pub async fn forward(
             .oauth
             .invalidate_if_generation(&concrete_account, generation)
             .await;
-        let (fresh, _, _) = state.oauth.get_token_with_generation(&account_id).await?;
+        let (fresh, _, _) = state
+            .oauth
+            .get_token_for_session(&account_id, session_key.as_deref())
+            .await?;
         resp = send_upstream(&client, method, &target, &base_headers, &fresh, &body_bytes).await?;
+    }
+    if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+        if let Some(sk) = session_key.as_deref() {
+            state.oauth.unpin_session(sk, &concrete_account).await;
+        }
     }
 
     Ok(build_client_response(resp, &normalized))
+}
+
+fn extract_native_session_id(body: &[u8]) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_slice(body).ok()?;
+    val.get("request")
+        .and_then(|r| r.get("sessionId"))
+        .or_else(|| val.get("sessionId"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Whether a raw request path may be forwarded upstream.

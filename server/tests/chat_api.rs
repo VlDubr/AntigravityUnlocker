@@ -116,6 +116,7 @@ async fn upstream(State(mock): State<Arc<Mock>>, req: Request) -> Response {
                 "candidates": [{ "finishReason": "STOP" }],
                 "usageMetadata": {
                     "promptTokenCount": 12,
+                    "cachedContentTokenCount": 9,
                     "candidatesTokenCount": 7,
                     "totalTokenCount": 19
                 }
@@ -150,6 +151,7 @@ async fn upstream(State(mock): State<Arc<Mock>>, req: Request) -> Response {
             }],
             "usageMetadata": {
                 "promptTokenCount": 5,
+                "cachedContentTokenCount": 4,
                 "candidatesTokenCount": 2,
                 "totalTokenCount": 7
             }
@@ -306,12 +308,12 @@ async fn wildcard_keys_keep_project_and_oauth_account_together() {
     config.upstream.base_url = upstream_url;
     let gateway = serve(build_router(AppState::new(config))).await;
     let client = reqwest::Client::new();
-    let body = json!({
-        "model": "gemini-3-flash",
-        "messages": [{ "role": "user", "content": "Hello" }]
-    });
-    for _ in 0..4 {
-        let response = request(&client, &gateway, body.clone())
+    for i in 0..4 {
+        let body = json!({
+            "model": "gemini-3-flash",
+            "messages": [{ "role": "user", "content": format!("Hello {i}") }]
+        });
+        let response = request(&client, &gateway, body)
             .send()
             .await
             .unwrap();
@@ -505,4 +507,143 @@ async fn routes_reasoning_effort_to_matching_variant_model() {
         let captured = mock.requests.lock().unwrap();
         assert_eq!(captured.last().unwrap().2["model"], expected_upstream);
     }
+}
+
+#[tokio::test]
+async fn prompt_caching_preserves_session_id_sticky_account_and_cached_tokens() {
+    let mock = Arc::new(Mock::default());
+    let upstream_url = serve(
+        Router::new()
+            .route("/token", post(token))
+            .fallback(upstream)
+            .with_state(mock.clone()),
+    )
+    .await;
+    let mut config = Config::default();
+    config.openai.enabled = true;
+    config.auth.keys = vec![KeyConfig {
+        key: "gateway-key".to_string(),
+        account_id: "*".to_string(),
+        ..KeyConfig::default()
+    }];
+    config.google.token_url = format!("{upstream_url}/token");
+    config.google.client_id = "client".to_string();
+    config.google.accounts = ["a", "b"]
+        .into_iter()
+        .map(|id| AccountConfig {
+            id: id.to_string(),
+            refresh_token: format!("refresh-{id}"),
+            project_id: format!("project-{id}"),
+        })
+        .collect();
+    config.upstream.base_url = upstream_url;
+    let gateway = serve(build_router(AppState::new(config))).await;
+    let client = reqwest::Client::new();
+
+    // Multi-turn chat without prompt_cache_key must keep identical sessionId and sticky account.
+    let turn1 = json!({
+        "model": "gemini-3-flash",
+        "messages": [
+            { "role": "system", "content": "System rules" },
+            { "role": "user", "content": "First prompt" }
+        ]
+    });
+    let turn2 = json!({
+        "model": "gemini-3-flash",
+        "messages": [
+            { "role": "system", "content": "System rules" },
+            { "role": "user", "content": "First prompt" },
+            { "role": "assistant", "content": "First answer" },
+            { "role": "user", "content": "Follow-up question" }
+        ]
+    });
+    let resp1: Value = request(&client, &gateway, turn1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp1["usage"]["prompt_tokens_details"]["cached_tokens"], 4);
+
+    let resp2 = request(&client, &gateway, turn2).send().await.unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+
+    // Explicit prompt_cache_key + prompt_cache_retention overrides prefix and stays sticky.
+    let keyed1 = json!({
+        "model": "gemini-3-flash",
+        "prompt_cache_key": "copilot-chat-99",
+        "prompt_cache_retention": "24h",
+        "messages": [{ "role": "user", "content": "Message A" }]
+    });
+    let keyed2 = json!({
+        "model": "gemini-3-flash",
+        "prompt_cache_key": "copilot-chat-99",
+        "messages": [{ "role": "user", "content": "Message B" }]
+    });
+    assert_eq!(
+        request(&client, &gateway, keyed1).send().await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&client, &gateway, keyed2).send().await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    {
+        let captured = mock.requests.lock().unwrap();
+        assert_eq!(captured.len(), 4);
+        assert_eq!(
+            captured[0].2["request"]["sessionId"],
+            captured[1].2["request"]["sessionId"],
+            "multi-turn chat must reuse sessionId"
+        );
+        assert_eq!(
+            captured[0].1, captured[1].1,
+            "multi-turn chat must stay pinned to one wildcard account"
+        );
+        assert_eq!(
+            captured[2].2["request"]["sessionId"],
+            captured[3].2["request"]["sessionId"],
+            "explicit prompt_cache_key must reuse sessionId"
+        );
+        assert_eq!(
+            captured[2].1, captured[3].1,
+            "explicit prompt_cache_key must stay pinned to one wildcard account"
+        );
+        assert_ne!(
+            captured[0].2["request"]["sessionId"],
+            captured[2].2["request"]["sessionId"]
+        );
+    }
+
+    // Upstream generation 429 on a wildcard key must unpin the session so retries
+    // rotate to another account instead of staying stranded.
+    let rate_limited = json!({
+        "model": "rate-limited",
+        "prompt_cache_key": "quota-failover-chat",
+        "messages": [{ "role": "user", "content": "Retry me" }]
+    });
+    assert_eq!(
+        request(&client, &gateway, rate_limited.clone())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        request(&client, &gateway, rate_limited)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let captured = mock.requests.lock().unwrap();
+    assert_eq!(captured.len(), 6);
+    assert_ne!(
+        captured[4].1, captured[5].1,
+        "429 must unpin wildcard session so the next retry tries another account"
+    );
 }

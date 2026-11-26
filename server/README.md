@@ -255,6 +255,16 @@ tool calls to the Cloud Code API. It does not implement the OpenAI Responses
 API, embeddings, image input or audio. A client must return tool-call IDs
 unchanged when it sends tool results.
 
+To maximize upstream prompt cache hits, the adapter derives a deterministic
+`sessionId` per conversation from `prompt_cache_key` (or, when omitted, from
+the API key, `systemInstruction` and first user message), pins wildcard (`"*"`)
+sessions to one healthy account for 15 minutes (unpinning on `429`), forwards
+`usageMetadata.cachedContentTokenCount` as
+`usage.prompt_tokens_details.cached_tokens`, and logs per-request cache hit
+rates (`chat completion usage`). Long reasoning requests stay alive via 15s
+SSE `: keepalive` comments on `/v1/chat/completions` and 25s WebSocket `Ping`
+frames on `/v1/proxy-connect`.
+
 Enable the adapter in the server configuration or environment and restart the
 service:
 

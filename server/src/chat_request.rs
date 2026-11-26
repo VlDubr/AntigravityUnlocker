@@ -38,12 +38,15 @@
 //!   (`null`/`false`) - the values that mean "off"
 //! - `modalities` - `null` or exactly `["text"]`
 //! - `web_search_options` - `null` or `{}`
+//! - `prompt_cache_retention` - string, accepted for compatibility
+//!
+//! Converted for gateway session routing:
+//! - `prompt_cache_key` - non-empty string used to derive a stable `sessionId`
 //!
 //! Rejected with a specific error, because silently dropping them would change
 //! the meaning of the caller's request:
 //! - legacy `functions` / `function_call` (use `tools`)
-//! - `response_format`, `audio`, `prediction`, `prompt_cache_key`,
-//!   `prompt_cache_retention`
+//! - `response_format`, `audio`, `prediction`
 //!
 //! Unmapped keys *inside* a message (e.g. `name`) are ignored; message content
 //! and tool calls are always validated.
@@ -121,6 +124,12 @@ pub(crate) struct ConvertedChat {
     pub stream: bool,
     /// `stream_options.include_usage`: emit a trailing usage-only chunk.
     pub include_usage: bool,
+    /// Optional `prompt_cache_key` used by the gateway to derive a stable
+    /// upstream `sessionId` for prompt caching and sticky account routing.
+    pub prompt_cache_key: Option<String>,
+    /// First normalized `user` message text before adjacent same-role turns are
+    /// merged, used for stable fallback `sessionId` derivation.
+    pub first_user_message: Option<String>,
     /// Native request body: `contents`, optional `systemInstruction`, `tools`
     /// and `generationConfig`. `model`, `stream` and `include_usage` are
     /// transport-level and deliberately absent from this body.
@@ -198,14 +207,29 @@ pub(crate) fn convert_request(input: &Value) -> Result<ConvertedChat, AppError> 
             return bad(format!("`{key}` is not supported, use `tools` instead"));
         }
     }
-    for key in [
-        "response_format",
-        "audio",
-        "prediction",
-        "prompt_cache_key",
-        "prompt_cache_retention",
-    ] {
+    for key in ["response_format", "audio", "prediction"] {
         reject_if_present(body, key)?;
+    }
+    let prompt_cache_key = match significant(body.get("prompt_cache_key")) {
+        None => None,
+        Some(Value::String(key)) if !key.is_empty() => Some(key.clone()),
+        Some(Value::String(_)) => {
+            return bad("`prompt_cache_key` must be a non-empty string when present")
+        }
+        Some(other) => {
+            return bad(format!(
+                "`prompt_cache_key` must be a string, got {}",
+                type_name(other)
+            ))
+        }
+    };
+    if let Some(value) = significant(body.get("prompt_cache_retention")) {
+        if !value.is_string() {
+            return bad(format!(
+                "`prompt_cache_retention` must be a string, got {}",
+                type_name(value)
+            ));
+        }
     }
     if let Some(modalities) = significant(body.get("modalities")) {
         let text_only = modalities
@@ -263,6 +287,7 @@ pub(crate) fn convert_request(input: &Value) -> Result<ConvertedChat, AppError> 
     };
 
     let mut system_texts: Vec<String> = Vec::new();
+    let mut first_user_message: Option<String> = None;
     let mut builder = TurnBuilder::new();
     for (index, message) in messages.iter().enumerate() {
         let message = require_object(message, &format!("messages[{index}]"))?;
@@ -288,6 +313,11 @@ pub(crate) fn convert_request(input: &Value) -> Result<ConvertedChat, AppError> 
                     return bad(format!(
                         "`{at}` must be a non-empty string or a text-part array for role `user`"
                     ));
+                }
+                if first_user_message.is_none() {
+                    first_user_message = Some(Value::Array(
+                        texts.iter().map(|t| Value::String(t.clone())).collect(),
+                    ).to_string());
                 }
                 builder.push_turn("user", texts.iter().map(|text| text_part(text)).collect());
             }
@@ -397,6 +427,8 @@ pub(crate) fn convert_request(input: &Value) -> Result<ConvertedChat, AppError> 
         reasoning_effort,
         stream,
         include_usage,
+        prompt_cache_key,
+        first_user_message,
         request: Value::Object(request),
     })
 }
@@ -1564,12 +1596,16 @@ mod tests {
                 "`service_tier` is not supported",
             ),
             (
-                json!({"model": "m", "messages": [user_msg()], "prompt_cache_key": "k"}),
-                "`prompt_cache_key` is not supported",
+                json!({"model": "m", "messages": [user_msg()], "prompt_cache_key": ""}),
+                "`prompt_cache_key` must be a non-empty string",
             ),
             (
-                json!({"model": "m", "messages": [user_msg()], "prompt_cache_retention": "24h"}),
-                "`prompt_cache_retention` is not supported",
+                json!({"model": "m", "messages": [user_msg()], "prompt_cache_key": 123}),
+                "`prompt_cache_key` must be a string",
+            ),
+            (
+                json!({"model": "m", "messages": [user_msg()], "prompt_cache_retention": 24}),
+                "`prompt_cache_retention` must be a string",
             ),
             (
                 json!({"model": "m", "messages": [user_msg()], "parallel_tool_calls": false}),
@@ -1622,10 +1658,13 @@ mod tests {
             "modalities": ["text"],
             "web_search_options": {},
             "stream_options": {},
+            "prompt_cache_key": "chat-42",
+            "prompt_cache_retention": "24h",
             "n": 1,
             "max_completion_tokens": 64
         }));
         assert_eq!(converted.request["generationConfig"]["maxOutputTokens"], 64);
+        assert_eq!(converted.prompt_cache_key.as_deref(), Some("chat-42"));
         assert!(!converted.stream);
         assert!(!converted.include_usage);
 
